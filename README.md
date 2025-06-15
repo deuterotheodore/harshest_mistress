@@ -1,5 +1,5 @@
 # "The Harshest Mistress"
-Evolutionary simulation
+Evolutionary simulation, involving Prisoner's Dilemma, tribal identity and sexual selection
 
 Tested using: Python 3.12.3, requires: pygame
 
