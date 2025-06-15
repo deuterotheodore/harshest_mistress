@@ -1,5 +1,6 @@
 "The Harshest Mistress"
 Evolutionary simulation
+
 Tested using: Python 3.12.3, requires: pygame
 
 Agents live on a 10x10 grid and can interact with agents in neighboring cells (Moore neighborhood).
