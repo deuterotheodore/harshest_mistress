@@ -41,7 +41,7 @@ Additional parameters influence mating behavior to simulate sexual selection. Ea
 
 **"caring"** is calculated from the Prisoners' Dilemma interaction history with this male, this is meant to be indirectly affected by the chivalry parameter, male agents with high chivalry will be perceived as more caring.
 
-**"kinship"** is simply the distance measure between tribal identities.
+**"kinship"** about the reciprocal of square distance measure between tribal identities (closely related means large kinship value).
 
 All of these parameters, except for male_bias, are carried by both male and female agents, but male_investment, mating_display and chivalry is only expressed behaviorally in males while ladys_choice is only expressed behaviorally in females.
 The scores of the male suitor in each of the four categories is weighed by the female choice parameters to calculate an overall score. This score is now modified by the male's energy value, weighed by BULLYING_EFFECTIVENESS, to simulate strong males brute-forcing their way to reproductive success by bullying away competitors, thus partially overriding female choice. The final result is fed into a softmax function to find the suitor destined for fatherhood.
