@@ -467,7 +467,7 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
             opp_last = [act[0 if male_id < mother_id else 1] for act in hist_data[0]] + [0] * (3 - len(hist_data[0]))
             caring = (opp_avg + sum(opp_last)) / 5  # Normalize (~-5 to 5)
             # Kinship: Quadratic identity distance
-            kinship = np.sum((male.identity - mother.identity) ** 2) / IDENTITY_DIMENSIONS / 100  # Normalize (~0–500)
+            kinship = 1/(np.sum((male.identity - mother.identity) ** 2) / IDENTITY_DIMENSIONS +1)   
             # Score: Scalar product with ladys_choice
             score = np.dot(mother.ladys_choice, [strength, fitness, caring, kinship])
             scores.append((male_id, score, male.energy))
