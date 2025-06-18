@@ -2,24 +2,22 @@ import numpy as np
 import random
 from collections import defaultdict, deque
 from multiprocessing import Process, Queue
-import psutil #just to ask for number of physical cores
+import queue  # Added for queue.Empty
 import pygame
-import asyncio
+import psutil #just to ask for number of physical cores
 import platform
 import time
+import tkinter as tk
+import tkinter.font as tkfont
+from tkinter import filedialog
+import sys
+import os
 
 from sample_strategies import sample_strategies, sexual_strategies
 
-#todo / ideas 
-#
-#game rules:
-# flexible board size (e.g. 5x5 to 20x20)
-# climate: areas with higher/lower energy, e.g. energy desert at the center or in a corner
-# reproduction/migration: always spawn offspring in own cell, encode migration bias or threshold in genome to make migration a "choice"
-#
-#pygame graphical interface:
-# scatter plot e.g. showing cooperation ratio vs energy gained
-# input mask/sliders to enter parameter values directly, start/stop button, button to save agent log to file 
+# Global initialization
+turn = 0
+FPS = 20 
 
 NUM_CORES = psutil.cpu_count(logical=False)
 if NUM_CORES is None:
@@ -28,6 +26,7 @@ if NUM_CORES is None:
 #the game
 NUM_TURNS = 400
 INTERACTION_DEPTH = 3 #interactions per turn
+GRID_SIZE = 10
 
 # payoff matrix: standard Prisoner's Dilemma scores
 # 1 for cooperate, -1 for defect, value 0 (no history), make sure to never look up other values (0 = "no history")
@@ -72,25 +71,6 @@ DEBUG_TURNS = 2 #extra detailed printout for the first few turns
 LOG_TO_FILE = True
 LOG_INTERVAL = 50 # if LOG_TO_FILE, append to log every nth turn
 logfile_path = "/tmp/dead_agents_log.txt"
-
-# Pygame visualization setup
-WIDTH, HEIGHT = 1920, 1080
-GRID_SIZE = 10
-CELL_SIZE = 80
-GRID_OFFSET_X, GRID_OFFSET_Y = 40, 50
-GRAPH_OFFSET_X, GRAPH_OFFSET_Y = 880, 50
-GRAPH2_OFFSET_X, GRAPH2_OFFSET_Y = 1400, 50
-HIST_OFFSET_X, HIST_OFFSET_Y = 880, 400
-HIST2_OFFSET_X, HIST2_OFFSET_Y = 1400, 400
-DATA_OFFSET_X, DATA_OFFSET_Y = 900, 750
-BUTTON_OFFSET_X, BUTTON_OFFSET_Y = 900, 980
-WHITE = (250, 250, 250)
-BLACK = (5, 5, 5)
-GREEN = (20, 255, 30)
-RED = (255, 20, 30)
-BLUE = (50, 50, 255)
-GRAY = (150, 150, 150)
-YELLOW = (250, 250, 10)
 
 #the total_score and games_played arrays used to be part of the Agent structure and had to be removed for parallelization, because they are updated mid-turn for agents with more than one interaction
 total_score = defaultdict(float)
@@ -233,6 +213,12 @@ def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weigh
         mutated_mating_display = np.clip(mating_display + np.random.normal(0, MUTATION_RATE_SEXUAL), 0, SEXUAL_REPRODUCTION_THRESHOLD).astype(np.float16)
         mutated_chivalry = np.float16(chivalry + np.random.normal(0, MUTATION_RATE_SEXUAL))
         mutated_ladys_choice = ladys_choice + np.random.normal(0, MUTATION_RATE_SEXUAL, size=4).astype(np.float16)
+    else:
+        mutated_male_bias = 0
+        mutated_male_investment = 0
+        mutated_mating_display = 0
+        mutated_chivalry=0
+        mutated_ladys_choice=(0,0,0,0)
 
     return mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_identity, mutated_ingroup_preference, mutated_male_bias
 
@@ -608,62 +594,54 @@ def log_simulation_stats(turn, agents, dead_agents, games_played, total_score, f
     with open(file_path, 'a') as f:
         f.write("\n".join(lines))
 
-#initialize pygame display
-pygame.init()
-screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
-pygame.display.set_caption("Prisoner's Dilemma")
-font = pygame.font.SysFont('arial', 24)
+# Tribe mapping for agent identities
+# currently set up so that "10" is a large distance, and "1" is a moderate or small one. Max distance is sqrt(500) = 22.3. Founding tribes start at distances between 10 and 17.3, so "ethnically distinct"
+TRIBE_MAP = {
+    "A": [0] * IDENTITY_DIMENSIONS,
+    "B": [10] + [0] * (IDENTITY_DIMENSIONS - 1),
+    "C": [0, 10] + [0] * (IDENTITY_DIMENSIONS - 2),
+    "D": [10, 10] + [0] * (IDENTITY_DIMENSIONS - 2),
+    "E": [10, 10, 10] + [0] * (IDENTITY_DIMENSIONS - 3)
+}
+# Founder positions for spawning agents
+gr_lo = int((GRID_SIZE-1)*.1+.5)  #1, but derive from GRID_SIZE in case this is made dynamic
+gr_hi = int((GRID_SIZE-1)*.9+.5)  #8
+gr_mid = int((GRID_SIZE-1)*.5+.5) #5
+FOUNDER_POSITIONS = [(gr_lo, gr_lo), (gr_hi, gr_hi), (gr_lo, gr_hi), (gr_hi, gr_lo), (gr_mid, gr_mid)]
 
-#founder identities (prepare four identities for founding agents in each corner)
-TRIBE1 = [0 for x in range(IDENTITY_DIMENSIONS)]
-TRIBE2 = [0 for x in range(IDENTITY_DIMENSIONS)]
-TRIBE2[0]=10
-TRIBE3 = [0 for x in range(IDENTITY_DIMENSIONS)]
-TRIBE3[1]=1
-TRIBE4 = [0 for x in range(IDENTITY_DIMENSIONS)]
-TRIBE4[0]=10
-TRIBE4[1]=10
+# Parameter to constant mapping
+PARAM_TO_CONSTANT = {
+    "num_turns": ("NUM_TURNS", int),
+    "interaction_depth": ("INTERACTION_DEPTH", int),
+    "base_energy": ("EXTRACTION_BASE", int),
+    "consumption": ("CONSUMPTION", int),
+    "migration_rate": ("MIGRATION_RATE", float),
+    "migration_cost": ("MIGRATION_COST", int),
+    "aging_penalty": ("AGING_PENALTY", float),
+    "mutation_rate": ("MUTATION_RATE", float),
+    "mutation_rate_tribal": ("MUTATION_RATE_IDENTITY", float),
+    "mutation_rate_sexual": ("MUTATION_RATE_SEXUAL", float),
+    "log_to_file": ("LOG_TO_FILE", bool),
+    "logfile": ("logfile_path", str),
+    "log_turns": ("LOG_INTERVAL", int),
+    "allow_asexual": ("ALLOW_ASEXUAL", bool),
+    "allow_sexual": ("ALLOW_SEXUAL", bool)
+}
 
-#create empty agents array
-next_id = 0
-agents = []
-# Initialize founding agents,e.g. two agents in opposite corners of the board
-#breeding pair top-left
-append_agent(
-    posx=1, posy=1, id=next_id, born=0, sex=0,
-    identity=TRIBE1, ingroup_preference=0.5,
-    strategy="TFTT",
-    sexual_selection="fascist",
-    agents=agents
-)
-next_id += 1
-append_agent(
-    posx=1, posy=1, id=next_id, born=0, sex=1,
-    identity=TRIBE1, ingroup_preference=0.5,
-    strategy="TFTT",
-    sexual_selection="fascist",
-    agents=agents
-)
-next_id += 1
+def update_constants(params):
+    """Update global constants from params dictionary."""
+    global NUM_TURNS, INTERACTION_DEPTH, EXTRACTION_BASE, CONSUMPTION, MIGRATION_RATE, MIGRATION_COST
+    global AGING_PENALTY, MUTATION_RATE, MUTATION_RATE_IDENTITY, MUTATION_RATE_SEXUAL
+    global LOG_TO_FILE, logfile_path, LOG_INTERVAL, ALLOW_ASEXUAL, ALLOW_SEXUAL
+    for param_key, (const_name, const_type) in PARAM_TO_CONSTANT.items():
+        try:
+            globals()[const_name] = const_type(params[param_key])
+        except (KeyError, ValueError) as e:
+            print(f"Error updating {const_name}: {e}")
+    print(f"Updated constants: NUM_TURNS={NUM_TURNS}, INTERACTION_DEPTH={INTERACTION_DEPTH}, EXTRACTION_BASE={EXTRACTION_BASE}, CONSUMPTION={CONSUMPTION}, MIGRATION_RATE={MIGRATION_RATE}, MIGRATION_COST={MIGRATION_COST}, AGING_PENALTY={AGING_PENALTY}, MUTATION_RATE={MUTATION_RATE}, MUTATION_RATE_IDENTITY={MUTATION_RATE_IDENTITY}, MUTATION_RATE_SEXUAL={MUTATION_RATE_SEXUAL}, LOG_TO_FILE={LOG_TO_FILE}, logfile_path={logfile_path}, LOG_INTERVAL={LOG_INTERVAL}, ALLOW_ASEXUAL={ALLOW_ASEXUAL}, ALLOW_SEXUAL={ALLOW_SEXUAL}")
 
-#breeding pair bottom-right
-append_agent(
-    posx=8, posy=8, id=next_id, born=0, sex=0,
-    identity=TRIBE2, ingroup_preference=1.0,
-    strategy="TFT",
-    sexual_selection="balanced",
-    agents=agents
-)
-next_id += 1
-append_agent(
-    posx=8, posy=8, id=next_id, born=0, sex=1,
-    identity=TRIBE2, ingroup_preference=1.0,
-    strategy="TFT",
-    sexual_selection="balanced",
-    agents=agents
-)
-next_id += 1
-
+agents=[]
+next_id=0
 
 # initialize history dictionary and dead agents log
 history_dict = defaultdict(lambda: (deque(maxlen=3), np.float16(0.0), np.float16(0.0), 0))
@@ -674,144 +652,341 @@ dead_agents = []
 #history graphs, pause button
 population_history = []
 cc_percentage_history = []
+female_ratio_history = []
 paused = False
 
-def draw_visualization(agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, turn, elapsed, paused, simulation_ended=False):
-    screen.fill(WHITE)
+# pygame visualization ###################################################################
+# Visualization constants
+BASE_WIDTH, BASE_HEIGHT = 1920, 1080  # Base canvas size
+ASPECT_RATIO = BASE_WIDTH / BASE_HEIGHT  # 1.78:1
+MIN_WIDTH, MAX_WIDTH = 600, 3000  # Canvas width constraints
+CELL_SIZE = int(800 / GRID_SIZE)  # Dynamic cell size
+HISTO_BINS = 10  # Histogram bin count
+SCATTERPLOT_ENABLED = True  # Toggle scatterplot
+GRID_OFFSET_X, GRID_OFFSET_Y = 40, 50
+GRAPH1_OFFSET_X, GRAPH1_OFFSET_Y = 880, 50  # Population/CC ratio/Female ratio
+GRAPH2_OFFSET_X, GRAPH2_OFFSET_Y = 1400, 50  # Reproduction/Sexual Selection
+GRAPH3_OFFSET_X, GRAPH3_OFFSET_Y = 880, 400  # Age/Energy/Score
+GRAPH4_OFFSET_X, GRAPH4_OFFSET_Y = 1400, 400  # Tribal (Identity/Xenophobia)
+DATA_OFFSET_X, DATA_OFFSET_Y = 900, 750
+BUTTON_OFFSET_X, BUTTON_OFFSET_Y = 900, 980
+WHITE = (250, 250, 250)
+BLACK = (5, 5, 5)
+GREEN = (20, 255, 30)
+RED = (255, 20, 30)
+BLUE = (50, 50, 255)
+GRAY = (150, 150, 150)
+YELLOW = (250, 250, 10)
+PINK = (255, 105, 180)
+LIGHT_PINK = (255, 182, 193)
+
+def draw_visualization(screen, agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, female_ratio_history, total_score, population, font, turn, elapsed, paused, text_cache, simulation_ended=False):
+    # Measure total draw time
+    start_time = time.perf_counter_ns()
+    
+    # Canvas setup
+    canvas_start = time.perf_counter_ns()
+    window_width, window_height = screen.get_size()
+    window_aspect = window_width / window_height
+    if window_aspect > ASPECT_RATIO:
+        canvas_width = int(window_height * ASPECT_RATIO)
+        canvas_height = window_height
+    else:
+        canvas_width = window_width
+        canvas_height = int(window_width / ASPECT_RATIO)
+    canvas_width = max(MIN_WIDTH, min(MAX_WIDTH, canvas_width))
+    canvas_height = int(canvas_width / ASPECT_RATIO)
+    scale = canvas_width / BASE_WIDTH
+    canvas_x = (window_width - canvas_width) // 2
+    canvas_y = (window_height - canvas_height) // 2
+    canvas_rect = pygame.Rect(canvas_x, canvas_y, canvas_width, canvas_height)
+    screen.fill(WHITE, canvas_rect)
+    s_grid_offset_x = int(GRID_OFFSET_X * scale) + canvas_x
+    s_grid_offset_y = int(GRID_OFFSET_Y * scale) + canvas_y
+    s_cell_size = int(CELL_SIZE * scale)
+    s_graph1_offset_x = int(GRAPH1_OFFSET_X * scale) + canvas_x
+    s_graph1_offset_y = int(GRAPH1_OFFSET_Y * scale) + canvas_y
+    s_graph2_offset_x = int(GRAPH2_OFFSET_X * scale) + canvas_x
+    s_graph2_offset_y = int(GRAPH2_OFFSET_Y * scale) + canvas_y
+    s_graph3_offset_x = int(GRAPH3_OFFSET_X * scale) + canvas_x
+    s_graph3_offset_y = int(GRAPH3_OFFSET_Y * scale) + canvas_y
+    s_graph4_offset_x = int(GRAPH4_OFFSET_X * scale) + canvas_x
+    s_graph4_offset_y = int(GRAPH4_OFFSET_Y * scale) + canvas_y
+    s_data_offset_x = int(DATA_OFFSET_X * scale) + canvas_x
+    s_data_offset_y = int(DATA_OFFSET_Y * scale) + canvas_y
+    s_button_offset_x = int(BUTTON_OFFSET_X * scale) + canvas_x
+    s_button_offset_y = int(BUTTON_OFFSET_Y * scale) + canvas_y
+    canvas_time = (time.perf_counter_ns() - canvas_start) / 1000
     
     # Draw grid
+    grid_start = time.perf_counter_ns()
+    grid_surface = pygame.Surface((s_cell_size * GRID_SIZE, s_cell_size * GRID_SIZE), pygame.SRCALPHA)
     grid_label = font.render("Cell population / Cooperation (green) vs defection (red)", True, BLACK)
-    screen.blit(grid_label, (GRID_OFFSET_X, GRID_OFFSET_Y - 30))
+    grid_label = pygame.transform.smoothscale_by(grid_label, scale)
+    screen.blit(grid_label, (s_grid_offset_x, s_grid_offset_y - int(30 * scale)))
     for x in range(GRID_SIZE):
         for y in range(GRID_SIZE):
-            rect = pygame.Rect(GRID_OFFSET_X + x * CELL_SIZE, GRID_OFFSET_Y + y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-            pygame.draw.rect(screen, BLACK, rect, 1)
-            agent_count = sum(1 for agent in agents if agent.posx == x and agent.posy == y)
+            rect = pygame.Rect(x * s_cell_size, y * s_cell_size, s_cell_size, s_cell_size)
+            pygame.draw.rect(grid_surface, BLACK, rect, 1)
+            agent_count = population.get((x, y), 0)
             C = (x, y)
             if interactions[C] > 0:
                 coop_ratio = cc_games[C] / interactions[C] if cc_games[C] > 0 else 0
                 defect_ratio = dd_games[C] / interactions[C] if dd_games[C] > 0 else 0
-                color = (
-                    min(255, int(255 * defect_ratio)),
-                    min(255, int(255 * coop_ratio)),
-                    0
-                )
+                cd_count = interactions[C] - cc_games[C] - dd_games[C]
+                cd_ratio = cd_count / interactions[C] if cd_count > 0 else 0
+                base_r = 255 * defect_ratio
+                base_g = 255 * coop_ratio
+                base_b = 0
+                cd_r, cd_g, cd_b = 200, 200, 10
+                r = int(base_r * (1 - cd_ratio) + cd_r * cd_ratio)
+                g = int(base_g * (1 - cd_ratio) + cd_g * cd_ratio)
+                b = int(base_b * (1 - cd_ratio) + cd_b * cd_ratio)
+                color = (r, g, b)
             else:
                 color = (200, 200, 200)
-            pygame.draw.rect(screen, color, rect.inflate(-2, -2))
-            text = font.render(str(agent_count), True, BLACK)
-            screen.blit(text, (GRID_OFFSET_X + x * CELL_SIZE + 20, GRID_OFFSET_Y + y * CELL_SIZE + 20))
+            pygame.draw.rect(grid_surface, color, rect.inflate(-int(2 * scale), -int(2 * scale)))
+            if agent_count <= 10:  # Cache common counts
+                key = f"count_{agent_count}_{int(24 * scale)}"
+                if key not in text_cache:
+                    text = font.render(str(agent_count), True, BLACK)
+                    text = pygame.transform.smoothscale_by(text, scale)
+                    text_cache[key] = text
+                text = text_cache[key]
+            else:
+                text = font.render(str(agent_count), True, BLACK)
+                text = pygame.transform.smoothscale_by(text, scale)
+            text_pos = (x * s_cell_size + int(20 * scale), y * s_cell_size + int(20 * scale))
+            grid_surface.blit(text, text_pos)
+    screen.blit(grid_surface, (s_grid_offset_x, s_grid_offset_y))
+    grid_time = (time.perf_counter_ns() - grid_start) / 1000
     
-    # Draw population and (C,C) ratio graphs
-    graph_label = font.render("Population (blue) / (C,C) ratio (green)", True, BLACK)
-    screen.blit(graph_label, (GRAPH_OFFSET_X, GRAPH_OFFSET_Y - 30))
-    pygame.draw.rect(screen, BLACK, (GRAPH_OFFSET_X, GRAPH_OFFSET_Y, 500, 300), 1)
+    # Draw population, cc ratio, and female ratio (graph1)
+    graph1_start = time.perf_counter_ns()
+    graph_label = font.render("Population / CC ratio / Female ratio", True, BLACK)
+    graph_label = pygame.transform.smoothscale_by(graph_label, scale)
+    screen.blit(graph_label, (s_graph1_offset_x, s_graph1_offset_y - int(30 * scale)))
+    pygame.draw.rect(screen, BLACK, (s_graph1_offset_x, s_graph1_offset_y, int(500 * scale), int(300 * scale)), 1)
     if population_history:
-        max_pop = max(population_history)
-        for i in range(1, len(population_history)):
-            x1 = GRAPH_OFFSET_X + (i-1) * 500 // NUM_TURNS
-            y1 = GRAPH_OFFSET_Y + 300 - (population_history[i-1] * 300 // max_pop)
-            x2 = GRAPH_OFFSET_X + i * 500 // NUM_TURNS
-            y2 = GRAPH_OFFSET_Y + 300 - (population_history[i] * 300 // max_pop)
-            pygame.draw.line(screen, BLUE, (x1, y1), (x2, y2), 2)
+        max_entries = 200
+        if len(population_history) > max_entries:
+            indices = np.linspace(0, len(population_history)-1, max_entries, dtype=int)
+            draw_population = [population_history[i] for i in indices]
+        else:
+            draw_population = population_history
+        max_pop = max(draw_population)
+        for i in range(1, len(draw_population)):
+            x1 = s_graph1_offset_x + (i-1) * int(500 * scale) // max_entries
+            y1 = s_graph1_offset_y + int(300 * scale) - (draw_population[i-1] * int(300 * scale) // max_pop)
+            x2 = s_graph1_offset_x + i * int(500 * scale) // max_entries
+            y2 = s_graph1_offset_y + int(300 * scale) - (draw_population[i] * int(300 * scale) // max_pop)
+            pygame.draw.line(screen, BLUE, (x1, y1), (x2, y2), int(2 * scale))
     if cc_percentage_history:
-        for i in range(1, len(cc_percentage_history)):
-            x1 = GRAPH_OFFSET_X + (i-1) * 500 // NUM_TURNS
-            y1 = GRAPH_OFFSET_Y + 300 - (cc_percentage_history[i-1] * 300 // 100)
-            x2 = GRAPH_OFFSET_X + i * 500 // NUM_TURNS
-            y2 = GRAPH_OFFSET_Y + 300 - (cc_percentage_history[i] * 300 // 100)
-            pygame.draw.line(screen, GREEN, (x1, y1), (x2, y2), 2)
-    # Draw max pop label
+        if len(cc_percentage_history) > max_entries:
+            indices = np.linspace(0, len(cc_percentage_history)-1, max_entries, dtype=int)
+            draw_cc = [cc_percentage_history[i] for i in indices]
+        else:
+            draw_cc = cc_percentage_history
+        for i in range(1, len(draw_cc)):
+            x1 = s_graph1_offset_x + (i-1) * int(500 * scale) // max_entries
+            y1 = s_graph1_offset_y + int(300 * scale) - (draw_cc[i-1] * int(300 * scale) // 100)
+            x2 = s_graph1_offset_x + i * int(500 * scale) // max_entries
+            y2 = s_graph1_offset_y + int(300 * scale) - (draw_cc[i] * int(300 * scale) // 100)
+            pygame.draw.line(screen, GREEN, (x1, y1), (x2, y2), int(2 * scale))
+    if ALLOW_SEXUAL and female_ratio_history:
+        if len(female_ratio_history) > max_entries:
+            indices = np.linspace(0, len(female_ratio_history)-1, max_entries, dtype=int)
+            draw_female = [female_ratio_history[i] for i in indices]
+        else:
+            draw_female = female_ratio_history
+        for i in range(1, len(draw_female)):
+            x1 = s_graph1_offset_x + (i-1) * int(500 * scale) // max_entries
+            y1 = s_graph1_offset_y + int(300 * scale) - (draw_female[i-1] * 100 * int(300 * scale) // 100)
+            x2 = s_graph1_offset_x + i * int(500 * scale) // max_entries
+            y2 = s_graph1_offset_y + int(300 * scale) - (draw_female[i] * 100 * int(300 * scale) // 100)
+            pygame.draw.line(screen, PINK, (x1, y1), (x2, y2), int(2 * scale))
     pop_label = font.render(f"Max Pop: {int(max_pop)}", True, BLACK)
-    screen.blit(pop_label, (GRAPH_OFFSET_X + 350, GRAPH_OFFSET_Y))
+    pop_label = pygame.transform.smoothscale_by(pop_label, scale)
+    screen.blit(pop_label, (s_graph1_offset_x + int(350 * scale), s_graph1_offset_y))
+    graph1_time = (time.perf_counter_ns() - graph1_start) / 1000
     
-    # Draw age and energy histograms
-    hist_label = font.render("Agent age (blue) / score (red)", True, BLACK)
-    screen.blit(hist_label, (HIST_OFFSET_X, HIST_OFFSET_Y - 30))
-    pygame.draw.rect(screen, BLACK, (HIST_OFFSET_X, HIST_OFFSET_Y, 500, 300), 1)
+    # Draw offspring count, male investment, and lady's choice histograms (graph2)
+    graph2_start = time.perf_counter_ns()
+    pygame.draw.rect(screen, BLACK, (s_graph2_offset_x, s_graph2_offset_y, int(500 * scale), int(300 * scale)), 1)
+    label_text = "Offspring"
+    if ALLOW_SEXUAL:
+        label_text += " / M.investment (R) / F.choice (pink)"
+    hist_label = font.render(label_text, True, BLACK)
+    hist_label = pygame.transform.smoothscale_by(hist_label, scale)
+    screen.blit(hist_label, (s_graph2_offset_x, s_graph2_offset_y - int(30 * scale)))
+    
+    # Lady's choice average histogram (if ALLOW_SEXUAL, 4 bins as columns, draw first)
+    if ALLOW_SEXUAL:
+        ladys_choice_data = [agent.ladys_choice for agent in agents if hasattr(agent, 'ladys_choice')]
+        if ladys_choice_data:
+            avg_ladys_choice = np.mean(ladys_choice_data, axis=0)
+            if len(avg_ladys_choice) >= 4:  # Ensure at least 4 values
+                bar_width = int(500 * scale) // 4
+                for i in range(4):
+                    x = s_graph2_offset_x + i * bar_width
+                    height = int(avg_ladys_choice[i] * 300 * scale)  # Assume 0-1 range
+                    y = s_graph2_offset_y + int(300 * scale) - height
+                    pygame.draw.rect(screen, LIGHT_PINK, (x, y, bar_width, height))
+    
+    # Offspring count histogram (omit zero-offspring bin)
+    offspring_counts = [len(agent.offspring) for agent in agents if len(agent.offspring) > 0]
+    max_bin = 1
+    offspring_points = []
+    if offspring_counts:
+        max_offspring = max(offspring_counts)
+        offspring_bins, offspring_edges = np.histogram(offspring_counts, bins=HISTO_BINS, range=(1, max_offspring+1))
+        max_bin = max(offspring_bins) or 1
+        for i in range(len(offspring_bins)):
+            x = s_graph2_offset_x + (offspring_edges[i] / max_offspring) * int(500 * scale)
+            y = s_graph2_offset_y + int(300 * scale) - (offspring_bins[i] * int(300 * scale) // max_bin)
+            offspring_points.append((x, y))
+        for i in range(1, len(offspring_points)):
+            pygame.draw.line(screen, YELLOW, offspring_points[i-1], offspring_points[i], int(2 * scale))
+    
+    # Male investment histogram (if ALLOW_SEXUAL)
+    if ALLOW_SEXUAL:
+        male_investments = [agent.male_investment for agent in agents if hasattr(agent, 'male_investment')]
+        if male_investments:
+            max_investment = max(male_investments)
+            investment_bins, investment_edges = np.histogram(male_investments, bins=HISTO_BINS, range=(0, max_investment+1))
+            max_bin = max(max_bin, max(investment_bins)) or 1
+            investment_points = []
+            for i in range(len(investment_bins)):
+                x = s_graph2_offset_x + (investment_edges[i] / max_investment) * int(500 * scale)
+                y = s_graph2_offset_y + int(300 * scale) - (investment_bins[i] * int(300 * scale) // max_bin)
+                investment_points.append((x, y))
+            for i in range(1, len(investment_points)):
+                pygame.draw.line(screen, RED, investment_points[i-1], investment_points[i], int(2 * scale))
+    graph2_time = (time.perf_counter_ns() - graph2_start) / 1000
+    
+    # Draw age, energy, and score histograms (graph3)
+    graph3_start = time.perf_counter_ns()
+    hist_label = font.render("Energy (R) / Score (G) / Age (B)", True, BLACK)
+    hist_label = pygame.transform.smoothscale_by(hist_label, scale)
+    screen.blit(hist_label, (s_graph3_offset_x, s_graph3_offset_y - int(30 * scale)))
+    pygame.draw.rect(screen, BLACK, (s_graph3_offset_x, s_graph3_offset_y, int(500 * scale), int(300 * scale)), 1)
     ages = [turn - agent.born for agent in agents]
-    scores = [agent.energy for agent in agents]
-    if ages and scores:
+    energy_scores = [agent.energy for agent in agents]
+    total_scores = [total_score[agent.id] for agent in agents]
+    if ages and energy_scores and total_scores:
         max_age = max(ages) if ages else 1
-        min_score = min(scores) if scores else 0
-        max_score = max(scores) if scores else 1
+        max_age += 1
+        min_energy = min(energy_scores) if energy_scores else 0
+        max_energy = max(energy_scores) if energy_scores else 1
+        energy_range = max_energy - min_energy if max_energy != min_energy else 1
+        min_score = min(total_scores) if total_scores else 0
+        max_score = max(total_scores) if total_scores else 1
         score_range = max_score - min_score if max_score != min_score else 1
-        age_bins, age_edges = np.histogram(ages, bins=10, range=(0, max_age))
-        score_bins, score_edges = np.histogram(scores, bins=10, range=(min_score, max_score))
-        max_bin = max(max(age_bins), max(score_bins)) or 1
-        
+        age_bins, age_edges = np.histogram(ages, bins=HISTO_BINS, range=(0, max_age))
+        energy_bins, energy_edges = np.histogram(energy_scores, bins=HISTO_BINS, range=(min_energy, max_energy))
+        score_bins, score_edges = np.histogram(total_scores, bins=HISTO_BINS, range=(min_score, max_score))
+        max_bin = max(max(age_bins), max(energy_bins), max(score_bins)) or 1
         # Plot age histogram (blue)
         age_points = []
         for i in range(len(age_bins)):
-            x = HIST_OFFSET_X + (age_edges[i] / max_age) * 500
-            y = HIST_OFFSET_Y + 300 - (age_bins[i] * 300 // max_bin)
+            x = s_graph3_offset_x + (age_edges[i] / max_age) * int(500 * scale)
+            y = s_graph3_offset_y + int(300 * scale) - (age_bins[i] * int(300 * scale) // max_bin)
             age_points.append((x, y))
         for i in range(1, len(age_points)):
-            pygame.draw.line(screen, BLUE, age_points[i-1], age_points[i], 2)
-        
-        # Plot score histogram (red)
+            pygame.draw.line(screen, BLUE, age_points[i-1], age_points[i], int(2 * scale))
+        # Plot energy histogram (red)
+        energy_points = []
+        for i in range(len(energy_bins)):
+            x = s_graph3_offset_x + ((energy_edges[i] - min_energy) / energy_range) * int(500 * scale)
+            y = s_graph3_offset_y + int(300 * scale) - (energy_bins[i] * int(300 * scale) // max_bin)
+            energy_points.append((x, y))
+        for i in range(1, len(energy_points)):
+            pygame.draw.line(screen, RED, energy_points[i-1], energy_points[i], int(2 * scale))
+        # Plot score histogram (green)
         score_points = []
         for i in range(len(score_bins)):
-            x = HIST_OFFSET_X + ((score_edges[i] - min_score) / score_range) * 500
-            y = HIST_OFFSET_Y + 300 - (score_bins[i] * 300 // max_bin)
+            x = s_graph3_offset_x + ((score_edges[i] - min_score) / score_range) * int(500 * scale)
+            y = s_graph3_offset_y + int(300 * scale) - (score_bins[i] * int(300 * scale) // max_bin)
             score_points.append((x, y))
         for i in range(1, len(score_points)):
-            pygame.draw.line(screen, RED, score_points[i-1], score_points[i], 2)
-        
-        # Draw x-axis labels for energy (fixed 0 to 5, approximate)
+            pygame.draw.line(screen, GREEN, score_points[i-1], score_points[i], int(2 * scale))
+        # Draw x-axis labels for energy
         for i in range(6):
-            label = font.render(str(i), True, BLACK)
-            screen.blit(label, (HIST_OFFSET_X + i * 100 - 10, HIST_OFFSET_Y + 310))
-        
+            energy_label = min_energy + i * (max_energy - min_energy) / 5
+            label = font.render(f"{energy_label:.0f}", True, BLACK)
+            label = pygame.transform.smoothscale_by(label, scale)
+            screen.blit(label, (s_graph3_offset_x + i * int(100 * scale) - int(10 * scale), s_graph3_offset_y + int(310 * scale)))
         # Draw max age label
         age_label = font.render(f"Max Age: {int(max_age)}", True, BLACK)
-        screen.blit(age_label, (HIST_OFFSET_X + 400, HIST_OFFSET_Y + 340))
-
-	#xenophobia histogram
-        pygame.draw.rect(screen, BLACK, (GRAPH2_OFFSET_X, GRAPH2_OFFSET_Y, 500, 300), 1)
-        hist_label = font.render("xenophobia/nepotism", True, BLACK)
-        screen.blit(hist_label, (GRAPH2_OFFSET_X, GRAPH2_OFFSET_Y - 30))
-        xenophobia = [agent.ingroup_preference for agent in agents]
+        age_label = pygame.transform.smoothscale_by(age_label, scale)
+        screen.blit(age_label, (s_graph3_offset_x + int(400 * scale), s_graph3_offset_y + int(340 * scale)))
+    graph3_time = (time.perf_counter_ns() - graph3_start) / 1000
+    
+    # Draw xenophobia histogram and identity scatterplot (graph4)
+    graph4_start = time.perf_counter_ns()
+    pygame.draw.rect(screen, BLACK, (s_graph4_offset_x, s_graph4_offset_y, int(500 * scale), int(300 * scale)), 1)
+    hist_label = font.render("xenophobia (G)" + (" / Identity(A,B) (B)" if SCATTERPLOT_ENABLED else ""), True, BLACK)
+    hist_label = pygame.transform.smoothscale_by(hist_label, scale)
+    screen.blit(hist_label, (s_graph4_offset_x, s_graph4_offset_y - int(30 * scale)))
+    xenophobia = [agent.ingroup_preference for agent in agents]
+    if SCATTERPLOT_ENABLED:
+        scatter_start = time.perf_counter_ns()
+        # Orthonormalize TRIBE_MAP["A"] and TRIBE_MAP["B"]
+        u1 = np.array(TRIBE_MAP["A"])
+        u2 = np.array(TRIBE_MAP["B"])
+        if np.all(u1 == 0):
+            e1 = u2 / np.linalg.norm(u2)
+            # Choose orthogonal vector, e.g., swap non-zero component
+            idx = np.argmax(np.abs(e1))
+            e2 = np.zeros_like(e1)
+            e2[(idx + 1) % IDENTITY_DIMENSIONS] = 1
+            e2 = e2 - np.dot(e2, e1) * e1
+            e2 = e2 / np.linalg.norm(e2)
+        else:
+            e1 = u1 / np.linalg.norm(u1)
+            u2_prime = u2 - np.dot(u2, u1) / np.dot(u1, u1) * u1
+            e2 = u2_prime / np.linalg.norm(u2_prime)
+        
+        # Project agent.identity onto plane
+        identity_points = []
+        for agent in agents:
+            v = np.array(agent.identity)
+            x = np.dot(v, e1)
+            y = np.dot(v, e2)
+            if -10 <= x <= 10 and -10 <= y <= 10:  # Retain filtering
+                identity_points.append((x, y))
+        
+        scatter_gather_time = (time.perf_counter_ns() - scatter_start) / 1000
+        scatter_draw_start = time.perf_counter_ns()
+        if identity_points:
+            x_coords, y_coords = zip(*identity_points)
+            x_min, x_max = min(x_coords), max(x_coords)
+            y_min, y_max = min(y_coords), max(y_coords)
+            x_range = x_max - x_min if x_max != x_min else 1
+            y_range = y_max - y_min if y_max != y_min else 1
+            for x, y in identity_points:
+                px = s_graph4_offset_x + ((x - x_min) / x_range) * int(500 * scale)
+                py = s_graph4_offset_y + int(300 * scale) - ((y - y_min) / y_range) * int(300 * scale)
+                dot_rect = pygame.Rect(px - int(1.5 * scale), py - int(1.5 * scale), int(3 * scale), int(3 * scale))
+                pygame.draw.rect(screen, BLUE, dot_rect)
+        scatter_draw_time = (time.perf_counter_ns() - scatter_draw_start) / 1000
+    else:
+        scatter_gather_time = 0
+        scatter_draw_time = 0
     if xenophobia:
-        xe_bins, xe_edges = np.histogram(xenophobia, bins=10, range=(0, 1))
-        max_bin = max(xe_bins) or 1        
-        # Plot  histogram 
+        xe_bins, xe_edges = np.histogram(xenophobia, bins=HISTO_BINS, range=(0, 1))
+        max_bin = max(xe_bins) or 1
         xe_points = []
         for i in range(len(xe_bins)):
-            x = GRAPH2_OFFSET_X + (xe_edges[i]) * 500
-            y = GRAPH2_OFFSET_Y + 300 - (xe_bins[i] * 300 // max_bin)
+            x = s_graph4_offset_x + xe_edges[i] * int(500 * scale)
+            y = s_graph4_offset_y + int(300 * scale) - (xe_bins[i] * int(300 * scale) // max_bin)
             xe_points.append((x, y))
         for i in range(1, len(xe_points)):
-            pygame.draw.line(screen, GREEN, xe_points[i-1], xe_points[i], 2)
-
-	#identity histogram: similarity to TRIBE1 and TRIBE2 (eventually: four founder tribes?)
-        pygame.draw.rect(screen, BLACK, (HIST2_OFFSET_X, HIST2_OFFSET_Y, 500, 300), 1)        
-        hist_label = font.render("Identity tribe1: (blue) / tribe2 (red)", True, BLACK)
-        screen.blit(hist_label, (HIST2_OFFSET_X, HIST2_OFFSET_Y - 30))
-        distances1 = [np.sum((agent.identity - TRIBE1)**2)/IDENTITY_DIMENSIONS for agent in agents] #euclidian distance squared, in range [0,1]
-        distances2 = [np.sum((agent.identity - TRIBE2)**2)/IDENTITY_DIMENSIONS for agent in agents]
-    if distances1 and distances2:
-        dist1_bins, dist1_edges = np.histogram(distances1, bins=10, range=(0, 1))
-        dist2_bins, dist2_edges = np.histogram(distances2, bins=10, range=(0, 1))
-        max_bin = max(max(dist1_bins), max(dist2_bins)) or 1        
-        # Plot identity histogram 
-        dist1_points = []
-        for i in range(len(dist1_bins)):
-            x = HIST2_OFFSET_X + (dist1_edges[i]) * 500
-            y = HIST2_OFFSET_Y + 300 - (dist1_bins[i] * 300 // max_bin)
-            dist1_points.append((x, y))
-        for i in range(1, len(dist1_points)):
-            pygame.draw.line(screen, BLUE, dist1_points[i-1], dist1_points[i], 2)
-        dist2_points = []
-        for i in range(len(dist2_bins)):
-            x = HIST2_OFFSET_X + (dist2_edges[i]) * 500
-            y = HIST2_OFFSET_Y + 300 - (dist2_bins[i] * 300 // max_bin)
-            dist2_points.append((x, y))
-        for i in range(1, len(dist2_points)):
-            pygame.draw.line(screen, RED, dist2_points[i-1], dist2_points[i], 2)
-
-
+            pygame.draw.line(screen, GREEN, xe_points[i-1], xe_points[i], int(2 * scale))
+    graph4_time = (time.perf_counter_ns() - graph4_start) / 1000
+    
     # Draw numeric data
+    data_start = time.perf_counter_ns()
     total_interactions = sum(interactions.values())
     ns_per_int = elapsed/total_interactions*1e+9 if total_interactions > 0 else 0
     total_cc = sum(cc_games.values())
@@ -831,21 +1006,62 @@ def draw_visualization(agents, cc_games, dd_games, interactions, population_hist
     ]
     for i, text in enumerate(data_texts):
         rendered = font.render(text, True, BLACK)
-        screen.blit(rendered, (DATA_OFFSET_X, DATA_OFFSET_Y + i * 30))
+        rendered = pygame.transform.smoothscale_by(rendered, scale)
+        screen.blit(rendered, (s_data_offset_x, s_data_offset_y + i * int(30 * scale)))
+    data_time = (time.perf_counter_ns() - data_start) / 1000
     
     # Draw pause/exit button
-    button_rect = pygame.Rect(BUTTON_OFFSET_X, BUTTON_OFFSET_Y, 100, 40)
+    button_start = time.perf_counter_ns()
+    button_rect = pygame.Rect(s_button_offset_x, s_button_offset_y, int(100 * scale), int(40 * scale))
     button_color = GRAY if paused and not simulation_ended else YELLOW
     pygame.draw.rect(screen, button_color, button_rect)
     button_text = "Exit" if simulation_ended else "Pause" if not paused else "Resume"
-    text = font.render(button_text, True, BLACK)
+    text_key = f"button_{button_text}_{int(24 * scale)}"
+    if text_key not in text_cache:
+        text = font.render(button_text, True, BLACK)
+        text = pygame.transform.smoothscale_by(text, scale)
+        text_cache[text_key] = text
+    text = text_cache[text_key]
     text_rect = text.get_rect(center=button_rect.center)
     screen.blit(text, text_rect)
+    button_time = (time.perf_counter_ns() - button_start) / 1000
     
+    # Display flip
+    flip_start = time.perf_counter_ns()
     pygame.display.flip()
+    flip_time = (time.perf_counter_ns() - flip_start) / 1000
+    
+    # Print timing breakdown in ms
+    total_time_ms = (time.perf_counter_ns() - start_time) / 1000000
+    canvas_time_ms = canvas_time / 1000
+    grid_time_ms = grid_time / 1000
+    graph1_time_ms = graph1_time / 1000
+    graph2_time_ms = graph2_time / 1000
+    graph3_time_ms = graph3_time / 1000
+    graph4_time_ms = graph4_time / 1000
+    scatter_gather_time_ms = scatter_gather_time / 1000
+    scatter_draw_time_ms = scatter_draw_time / 1000
+    data_time_ms = data_time / 1000
+    button_time_ms = button_time / 1000
+    flip_time_ms = flip_time / 1000
+    print(f"Draw time: {total_time_ms:.1f} ms (Canvas: {canvas_time_ms:.1f}, Grid: {grid_time_ms:.1f}, Graph1: {graph1_time_ms:.1f}, Graph2: {graph2_time_ms:.1f}, Graph3: {graph3_time_ms:.1f}, Graph4: {graph4_time_ms:.1f}, Scatter Gather: {scatter_gather_time_ms:.1f}, Scatter Draw: {scatter_draw_time_ms:.1f}, Data: {data_time_ms:.1f}, Button: {button_time_ms:.1f}, Flip: {flip_time_ms:.1f})")
 
 def handle_button_click(pos, paused, simulation_ended):
-    button_rect = pygame.Rect(BUTTON_OFFSET_X, BUTTON_OFFSET_Y, 100, 40)
+    window_width, window_height = pygame.display.get_surface().get_size()
+    window_aspect = window_width / window_height
+    if window_aspect > ASPECT_RATIO:
+        canvas_width = int(window_height * ASPECT_RATIO)
+        canvas_height = window_height
+    else:
+        canvas_width = window_width
+        canvas_height = int(window_width / ASPECT_RATIO)
+    canvas_width = max(MIN_WIDTH, min(MAX_WIDTH, canvas_width))
+    scale = canvas_width / BASE_WIDTH
+    canvas_x = (window_width - canvas_width) // 2
+    canvas_y = (window_height - canvas_height) // 2
+    s_button_offset_x = int(BUTTON_OFFSET_X * scale) + canvas_x
+    s_button_offset_y = int(BUTTON_OFFSET_Y * scale) + canvas_y
+    button_rect = pygame.Rect(s_button_offset_x, s_button_offset_y, int(100 * scale), int(40 * scale))
     if button_rect.collidepoint(pos):
         if simulation_ended:
             return True, paused  # Exit
@@ -856,17 +1072,83 @@ def handle_button_click(pos, paused, simulation_ended):
 ###############################################################################################################
 # main loop
 
-async def main():
-    global agents, next_id, history_dict, id_to_agent, population_history, cc_percentage_history, turn, paused, timestamp
-    turn = 0
-    last_logged_turn=0
-    if LOG_TO_FILE:
-        with open(logfile_path, 'w') as f:
-            f.write("Dead Agents Log\n")
-            f.write("=" * 15 + "\n")
+def main(control_queue, param_queue):
+    global agents, next_id, history_dict, id_to_agent, population_history, cc_percentage_history, turn, paused, timestamp, NUM_TURNS, FPS
+    global screen, font
+    
+    last_logged_turn = 0
+    # Wait for initial parameters
+    params = param_queue.get()  # Blocking
+    print(f"Received params: {params}")
+    # Update constants initially
+    update_constants(params)
+
+    # Initialize founding agents
+    founders = [(i, params[f"founder{i}"], params[f"strategy{i}"], params[f"tribe{i}"]) for i in range(1, 6)]
+    active_founders = [(i, strategy, tribe) for i, active, strategy, tribe in founders if active]
+    if not active_founders:
+        print("Warning: No founders selected, defaulting to founder1")
+        active_founders = [(1, params["strategy1"], params["tribe1"])]
+    if ALLOW_SEXUAL:
+        print(f"Spawning {len(active_founders)} breeding pairs (sexual reproduction)")
+        for idx, (founder_num, strategy, tribe) in enumerate(active_founders):
+            posx, posy = FOUNDER_POSITIONS[idx % len(FOUNDER_POSITIONS)]
+            # Male
+            append_agent(
+                posx=posx, posy=posy, id=next_id, born=0, sex=0,
+                identity=TRIBE_MAP[tribe], ingroup_preference=0.5 if tribe == "A" else 1.0,
+                strategy=strategy, sexual_selection="balanced",
+                agents=agents
+            )
+            next_id += 1
+            # Female
+            append_agent(
+                posx=posx, posy=posy, id=next_id, born=0, sex=1,
+                identity=TRIBE_MAP[tribe], ingroup_preference=0.5 if tribe == "A" else 1.0,
+                strategy=strategy, sexual_selection="balanced",
+                agents=agents
+            )
+            next_id += 1
+    else:
+        print(f"Spawning {len(active_founders)} asexual agents")
+        for idx, (founder_num, strategy, tribe) in enumerate(active_founders):
+            posx, posy = FOUNDER_POSITIONS[idx % len(FOUNDER_POSITIONS)]
+            # Asexual agent (no sex specified)
+            append_agent(
+                posx=posx, posy=posy, id=next_id, born=0,
+                identity=TRIBE_MAP[tribe], ingroup_preference=0.5 if tribe == "A" else 1.0,
+                strategy=strategy, sexual_selection="balanced",
+                agents=agents
+            )
+            next_id += 1
+    print(f"Initialized {len(agents)} agents")
+    print(f"Before setting turn: {turn if 'turn' in globals() else 'undefined'}")
+ 
+
+    # initialize Pygame display
+    pygame.init()
+    pygame_width = int(screen_width * 0.65) 
+    pygame_height = int(screen_height * 0.7) 
+#    os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0" # to force window placement   
+    pygame_screen = pygame.display.set_mode((pygame_width, pygame_height), pygame.RESIZABLE)
+    pygame.display.set_caption("Simulation State")
+    #font = pygame.font.SysFont('arial', 24)
+    font = pygame.font.SysFont('monospace', 24)  # use fixed-width font for now
+    text_cache = {}  # Shared cache
+    screen = pygame_screen
+    pygame_clock = pygame.time.Clock()
 
     while turn < NUM_TURNS:
+    
+        try:
+            new_params = param_queue.get_nowait()
+            print(f"Updated params: {new_params}")
+            update_constants(new_params)
+        except queue.Empty:
+            pass
+                    
         timestamp = time.time()
+        start_time = time.perf_counter()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
@@ -875,8 +1157,8 @@ async def main():
                 if should_exit:
                     return        
         if paused:
-            draw_visualization(agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, turn, 0, paused)
-            await asyncio.sleep(1.0 / FPS)
+            draw_visualization(screen, agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, female_ratio_history, total_score, population, font, turn, 0, paused, text_cache)
+            time.sleep(1.0 / FPS)
             continue
 
 #statistics for this turn, to be reset each turn
@@ -1090,10 +1372,11 @@ async def main():
         population_history.append(len(agents))
         cc_percent = (total_cc / total_interactions * 100) if total_interactions > 0 else 0
         cc_percentage_history.append(cc_percent)
+        female_ratio_history.append(0 if len(agents) == 0 else female_pop/len(agents))
 
     # Update visualization every DRAW_INTERVAL-th turn
         if turn % DRAW_INTERVAL == 0:
-            draw_visualization(agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, turn,  (time.time()-timestamp), paused)
+            draw_visualization(screen, agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, female_ratio_history, total_score, population, font, turn,  (time.time()-timestamp), paused, text_cache)
 
     # Print progress
     # somewhat outdated, to be reviewed ("births" no longer accurate in case of sexual reproduction)
@@ -1106,7 +1389,11 @@ async def main():
                 print("Agent positions:", [(agent.id, agent.posx, agent.posy, agent.energy) for agent in agents])
 
         turn += 1
-        await asyncio.sleep(1.0 / FPS)
+
+        elapsed = time.perf_counter() - start_time
+        frame_time = 1.0 / FPS
+        if elapsed < frame_time:
+            time.sleep(frame_time - elapsed)
 
 #end of game loop. exits after NUM_TURN is reached, could also run indefinitely and wait for button press to end simulation instead. 
 # maximum number of turns is mainly there to avoid indefinite pileup of log data (dead_agents), instead we could just stop logging dead agents past a certain number.
@@ -1147,12 +1434,339 @@ async def main():
                 if should_exit:
                     return
         
-        draw_visualization(agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, turn,  0, paused, True)
-        await asyncio.sleep(1.0 / FPS)
+        draw_visualization(screen, agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, female_ratio_history, total_score, population, font, turn,  0, paused, text_cache, True)
+        time.sleep(1.0 / FPS)
 
-if platform.system() == "Emscripten":
-    asyncio.ensure_future(main())
-else:
-    if __name__ == "__main__":
-        asyncio.run(main())
+#######################################################################3
+def create_start_screen():
+    global screen_width, screen_height
+    screen_width = 1920 #2880
+    screen_height = 1080 #1800
+    # Initialize Tkinter window
+    root = tk.Tk()
+    root.title("The Harshest Mistress - Start Screen")
 
+    # Get screen resolution and set dynamic window size (~30% of screen)
+    screen_width = root.winfo_screenwidth() #2880
+    screen_height = root.winfo_screenheight() #1800
+    window_width = int(screen_width * 0.22) 
+    window_height = int(screen_height * 0.70) 
+    root.geometry(f"{window_width}x{window_height}")
+    root.resizable(True, True)
+
+    # Parameters dictionary
+    params = {
+        "num_turns": tk.StringVar(value="500"),
+        "interaction_depth": tk.StringVar(value="3"),
+        "base_energy": tk.IntVar(value=100),
+        "consumption": tk.IntVar(value=25),
+        "migration_rate": tk.DoubleVar(value=0.05),
+        "migration_cost": tk.IntVar(value=5),
+        "aging_penalty": tk.DoubleVar(value=0.4),
+        "mutation_rate": tk.DoubleVar(value=0.1),
+        "mutation_rate_tribal": tk.DoubleVar(value=0.05),
+        "mutation_rate_sexual": tk.DoubleVar(value=0.05),
+        "log_to_file": tk.BooleanVar(value=False),
+        "logfile": tk.StringVar(value=logfile_path),
+        "log_turns": tk.StringVar(value="100"),
+        "allow_asexual": tk.BooleanVar(value=False),
+        "allow_sexual": tk.BooleanVar(value=True),        
+        "founder1": tk.BooleanVar(value=True),        
+        "strategy1": tk.StringVar(value="TFT"),
+        "tribe1": tk.StringVar(value="A"),
+        "founder2": tk.BooleanVar(value=False),        
+        "strategy2": tk.StringVar(value="TFT"),
+        "tribe2": tk.StringVar(value="B"),
+        "founder3": tk.BooleanVar(value=False),        
+        "strategy3": tk.StringVar(value="TFT"),
+        "tribe3": tk.StringVar(value="C"),
+        "founder4": tk.BooleanVar(value=False),        
+        "strategy4": tk.StringVar(value="TFT"),
+        "tribe4": tk.StringVar(value="D"),
+        "founder5": tk.BooleanVar(value=False),        
+        "strategy5": tk.StringVar(value="TFT"),
+        "tribe5": tk.StringVar(value="E"),
+    }
+
+    # Font scaling setup
+    base_font_size = 12
+    min_font_size = 8
+    max_font_size = 18
+    title_font = tkfont.Font(family="Arial", size=base_font_size, weight="bold")
+    label_font = tkfont.Font(family="Arial", size=base_font_size)
+    small_font = tkfont.Font(family="Arial", size=(base_font_size-2))
+
+   # Parameter change callback
+    def on_param_change(*args):
+        param_values = {key: var.get() for key, var in params.items()}
+        param_queue.put(param_values)
+
+    # Trace all params except checkboxes (handled separately)
+    for key, var in params.items():
+        if key not in ["allow_asexual", "allow_sexual"]:
+            var.trace("w", on_param_change)
+
+    sim_process = None
+    control_queue = Queue()
+    param_queue = Queue()
+   
+    def update_fonts(event=None):
+        # Scale font size based on window size
+        new_width = root.winfo_width()
+        new_height = root.winfo_height()
+        scale_factor = min(new_width / window_width, new_height / window_height)
+        new_font_size = int(base_font_size * scale_factor)
+        new_font_size = max(min_font_size, min(new_font_size, max_font_size))
+        title_font.configure(size=new_font_size + 2)
+        label_font.configure(size=new_font_size)
+        # Update canvas scroll region
+        canvas.configure(scrollregion=canvas.bbox("all"))
+  
+    def select_logfile():
+        filepath = filedialog.asksaveasfilename(defaultextension=".log", filetypes=[("log files", "*.log"), ("txt files", "*.txt"), ("All files", "*.*")])
+        if filepath:
+            params["logfile"].set(filepath)
+
+    # Bind resize event
+    root.bind("<Configure>", update_fonts)
+
+    # Main canvas for scrolling
+    canvas = tk.Canvas(root)
+    scrollbar_y = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
+    scrollbar_x = tk.Scrollbar(root, orient="horizontal", command=canvas.xview)
+    canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+
+    # Layout scrollbars and canvas
+    scrollbar_y.pack(side="right", fill="y")
+    scrollbar_x.pack(side="bottom", fill="x")
+    canvas.pack(side="left", fill="both", expand=True)
+
+    # Main frame inside canvas
+    main_frame = tk.Frame(canvas)
+    canvas.create_window((0, 0), window=main_frame, anchor="n")
+
+    # Title
+    title_label = tk.Label(main_frame, text="The Harshest Mistress", font=title_font)
+    title_label.pack(pady=10)
+    subtitle_label = tk.Label(main_frame, text="Prisoner's Dilemma evolved", font=label_font)
+    subtitle_label.pack(pady=10)
+    
+    ############ tkinter gui elements
+
+    rules_frame = tk.Frame(main_frame)
+    rules_frame.pack(pady=20)
+
+    # Title
+    tk.Label(rules_frame, text="game rules", font=label_font).pack()
+
+    # Entry row (two text fields with labels on left)
+    entry_row = tk.Frame(rules_frame)
+    entry_row.pack(fill="x", pady=5)
+
+# Number of turns entry
+    tk.Label(entry_row, text="turns:", font=label_font).grid(row=0, column=0, sticky="e", padx=5)
+    turns_subframe = tk.Frame(entry_row)
+    turns_subframe.grid(row=0, column=1, sticky="w", padx=5)
+    turns_entry = tk.Entry(turns_subframe, textvariable=params["num_turns"], width=5)
+    turns_entry.pack(side="left")
+    entry_row.grid_columnconfigure(1, weight=1)  # Expand subframe
+
+
+    # Interaction depth entry
+    tk.Label(entry_row, text="depth:", font=label_font).grid(row=0, column=2, sticky="e", padx=5)
+    depth_subframe = tk.Frame(entry_row)
+    depth_subframe.grid(row=0, column=3, sticky="w", padx=5)
+    depth_entry = tk.Entry(depth_subframe, textvariable=params["interaction_depth"], width=3)
+    depth_entry.pack(side="left")
+    entry_row.grid_columnconfigure(3, weight=1)  # Expand subframe
+
+    # Slider row (five vertical sliders with labels above)
+    slider_row = tk.Frame(rules_frame)
+    slider_row.pack(fill="x", pady=5)
+
+    # Energy slider
+    tk.Label(slider_row, text="energy", font=small_font).grid(row=0, column=0, padx=5)
+    energy_slider = tk.Scale(slider_row, from_=10, to=200, resolution=5, orient=tk.VERTICAL, variable=params["base_energy"])
+    energy_slider.grid(row=1, column=0, padx=5)
+
+    # Consumption slider
+    tk.Label(slider_row, text="consumpt", font=small_font).grid(row=0, column=1, padx=5)
+    consumption_slider = tk.Scale(slider_row, from_=1, to=50, resolution=1, orient=tk.VERTICAL, variable=params["consumption"])
+    consumption_slider.grid(row=1, column=1, padx=5)
+
+    # Migration rate slider
+    tk.Label(slider_row, text="migration", font=small_font).grid(row=0, column=2, padx=5)
+    migrate_slider = tk.Scale(slider_row, from_=0.0, to=0.5, resolution=0.05, orient=tk.VERTICAL, variable=params["migration_rate"])
+    migrate_slider.grid(row=1, column=2, padx=5)
+
+    # Migration cost slider
+    tk.Label(slider_row, text="migr. cost", font=small_font).grid(row=0, column=3, padx=5)
+    migcost_slider = tk.Scale(slider_row, from_=0, to=25, resolution=1, orient=tk.VERTICAL, variable=params["migration_cost"])
+    migcost_slider.grid(row=1, column=3, padx=5)
+
+    # Aging penalty slider
+    tk.Label(slider_row, text="aging", font=small_font).grid(row=0, column=4, padx=5)
+    aging_slider = tk.Scale(slider_row, from_=0.0, to=1.0, resolution=0.1, orient=tk.VERTICAL, variable=params["aging_penalty"])
+    aging_slider.grid(row=1, column=4, padx=5)
+
+    #founders frame
+    founders_frame = tk.Frame(main_frame)
+    founders_frame.pack(pady=20)
+    tk.Label(founders_frame, text="founder population", font=label_font).pack()
+ 
+    # Column row (five columns of checkbox and two OptionMenus)
+    column_row = tk.Frame(founders_frame)
+    column_row.pack(fill="x", pady=5)
+
+    # Define columns
+    founder_labels=["top-left", "lower-right", "lower-left", "top-right", "center"]
+    for i in range(1, 6):
+        col = i - 1  # Grid column index (0 to 4)
+        # Checkbox
+        tk.Label(column_row, text=founder_labels[col], font=small_font).grid(row=0, column=col, sticky="w", padx=5)
+        tk.Checkbutton(column_row, variable=params[f"founder{i}"]).grid(row=1, column=col, sticky="w", padx=5)
+
+        # Strategy OptionMenu
+        tk.OptionMenu(column_row, params[f"strategy{i}"], "TFT", "TFTT", "AC", "AD", "GT", "random").grid(row=2, column=col, sticky="w", padx=5)
+
+        # Tribe OptionMenu
+        tk.OptionMenu(column_row, params[f"tribe{i}"], "A", "B", "C", "D", "E").grid(row=3, column=col, sticky="w", padx=5)
+
+
+    #reproduction frame
+    reproduction_frame = tk.Frame(main_frame)
+    reproduction_frame.pack(pady=20)
+
+    # Title
+    tk.Label(reproduction_frame, text="reproduction", font=label_font).pack()
+
+    # reproduction checkboxes
+    checkbox_row = tk.Frame(reproduction_frame)
+    checkbox_row.pack(fill="x", pady=5)
+
+    # checkbox interaction logic
+    def on_checkbox_change(*args):
+        if not params["allow_asexual"].get() and not params["allow_sexual"].get():
+            # If both would be False, set the other to True
+            if args[0] == "allow_asexual":  # Asexual was deselected
+                params["allow_sexual"].set(True)
+            else:  # Sexual was deselected
+                params["allow_asexual"].set(True)
+
+    params["allow_asexual"].trace("w", lambda *args: on_checkbox_change("allow_asexual"))
+    params["allow_sexual"].trace("w", lambda *args: on_checkbox_change("allow_sexual"))
+
+    # Asexual checkbox
+    tk.Label(checkbox_row, text="asexual:", font=small_font).grid(row=0, column=0, sticky="e", padx=5)
+    asexual_check = tk.Checkbutton(checkbox_row, variable=params["allow_asexual"])
+    asexual_check.grid(row=0, column=1, sticky="w", padx=5)
+
+    # Sexual checkbox
+    tk.Label(checkbox_row, text="sexual:", font=small_font).grid(row=0, column=2, sticky="e", padx=5)
+    sexual_check = tk.Checkbutton(checkbox_row, variable=params["allow_sexual"])
+    sexual_check.grid(row=0, column=3, sticky="w", padx=5)
+
+    tk.Label(reproduction_frame, text="mutation rates", font=small_font).pack()
+    
+    # Slider row (three vertical sliders with labels above)
+    slider_row = tk.Frame(reproduction_frame)
+    slider_row.pack(fill="x", pady=5)
+
+    # Mutation rate slider
+    tk.Label(slider_row, text="individual", font=small_font).grid(row=0, column=0, padx=5)
+    mutation_slider = tk.Scale(slider_row, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate"])
+    mutation_slider.grid(row=1, column=0, padx=5)
+
+    # Tribal mutation rate slider
+    tk.Label(slider_row, text="tribal", font=small_font).grid(row=0, column=1, padx=5)
+    tribal_slider = tk.Scale(slider_row, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate_tribal"])
+    tribal_slider.grid(row=1, column=1, padx=5)
+
+    # Sexual mutation rate slider
+    tk.Label(slider_row, text="sexual", font=small_font).grid(row=0, column=2, padx=5)
+    sexual_slider = tk.Scale(slider_row, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate_sexual"])
+    sexual_slider.grid(row=1, column=2, padx=5)
+
+    #logging frame
+    logging_frame = tk.Frame(main_frame)
+    logging_frame.pack(pady=20)
+
+    # log_to_file checkbox
+    logcheckbox_row = tk.Frame(logging_frame)
+    logcheckbox_row.pack(fill="x", pady=5)
+
+    tk.Label(logcheckbox_row, text="log to file", font=label_font).grid(row=0, column=0, sticky="e", padx=5)
+    log_check = tk.Checkbutton(logcheckbox_row, variable=params["log_to_file"])
+    log_check.grid(row=0, column=1, sticky="w", padx=5)
+
+    # logfile picker dialog
+    logfile_frame = tk.Frame(logging_frame)
+    logfile_frame.pack(fill=tk.X, pady=5)
+
+    logfile_entry = tk.Entry(logfile_frame, textvariable=params["logfile"], width=30)
+    logfile_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    tk.Button(logfile_frame, text="Browse", command=select_logfile).pack(side=tk.LEFT, padx=5)
+
+    logturns_row = tk.Frame(logging_frame)
+    logturns_row.pack(fill="x", pady=5)
+
+    tk.Label(logturns_row, text="logging turns:", font=label_font).grid(row=0, column=0, sticky="e", padx=5)
+    logturns_subframe = tk.Frame(logturns_row)
+    logturns_subframe.grid(row=0, column=1, sticky="w", padx=5)
+    logturns_entry = tk.Entry(logturns_subframe, textvariable=params["log_turns"], width=5)
+    logturns_entry.pack(side="left")
+    logturns_row.grid_columnconfigure(3, weight=1)
+
+    #buttons frame
+    button_frame = tk.Frame(main_frame)
+    button_frame.pack(pady=20)
+
+    start_button = tk.Button(button_frame, text="Start", width=10)
+    start_button.pack(side=tk.LEFT, padx=10)
+
+
+    def toggle_simulation():
+        nonlocal sim_process
+        if sim_process is None:
+            # Send initial parameters
+            param_values = {key: var.get() for key, var in params.items()}
+            print(f"Sending initial param_values: {param_values}")
+            param_queue.put(param_values)
+            # Start simulation process
+            sim_process = Process(target=main, args=(control_queue, param_queue))
+            sim_process.start()
+            start_button.config(text="Stop")
+        else:
+            # Stop simulation
+            control_queue.put("stop")
+            if sim_process:
+                sim_process.terminate()
+                sim_process.join()
+                sim_process = None
+            start_button.config(text="Start")
+
+    start_button.config(command=toggle_simulation)
+
+    # Exit button
+    def exit_app():
+        nonlocal sim_process
+        if sim_process:
+            control_queue.put("stop")
+            sim_process.terminate()
+            sim_process.join()
+            sim_process = None
+        root.destroy()
+        sys.exit(0)
+
+    tk.Button(button_frame, text="Exit", command=exit_app, width=10).pack(side="left", padx=10)
+
+
+    # Run Tkinter main loop
+    root.mainloop()
+
+if __name__ == "__main__":
+    try:
+        create_start_screen()
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
