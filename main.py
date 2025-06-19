@@ -8,6 +8,7 @@ import psutil #just to ask for number of physical cores
 import platform
 import time
 import tkinter as tk
+from tkinter import ttk
 import tkinter.font as tkfont
 from tkinter import filedialog
 import sys
@@ -152,8 +153,6 @@ class Agent:
         if input_vector[2] == 0:	#empty history 
             total_output=self.cooperation_bias
         else:
-	    #apply strategy            
-            linear_term = np.dot(input_vector, self.linear_weights)
             remote_vector = input_vector[:2]  # [-1, 1]
             recent_vector = input_vector[2:]  # {-1, 1, 0}
             # Apply strategy
@@ -638,7 +637,7 @@ def update_constants(params):
             globals()[const_name] = const_type(params[param_key])
         except (KeyError, ValueError) as e:
             print(f"Error updating {const_name}: {e}")
-    print(f"Updated constants: NUM_TURNS={NUM_TURNS}, INTERACTION_DEPTH={INTERACTION_DEPTH}, EXTRACTION_BASE={EXTRACTION_BASE}, CONSUMPTION={CONSUMPTION}, MIGRATION_RATE={MIGRATION_RATE}, MIGRATION_COST={MIGRATION_COST}, AGING_PENALTY={AGING_PENALTY}, MUTATION_RATE={MUTATION_RATE}, MUTATION_RATE_IDENTITY={MUTATION_RATE_IDENTITY}, MUTATION_RATE_SEXUAL={MUTATION_RATE_SEXUAL}, LOG_TO_FILE={LOG_TO_FILE}, logfile_path={logfile_path}, LOG_INTERVAL={LOG_INTERVAL}, ALLOW_ASEXUAL={ALLOW_ASEXUAL}, ALLOW_SEXUAL={ALLOW_SEXUAL}")
+#    print(f"Updated constants: NUM_TURNS={NUM_TURNS}, INTERACTION_DEPTH={INTERACTION_DEPTH}, EXTRACTION_BASE={EXTRACTION_BASE}, CONSUMPTION={CONSUMPTION}, MIGRATION_RATE={MIGRATION_RATE}, MIGRATION_COST={MIGRATION_COST}, AGING_PENALTY={AGING_PENALTY}, MUTATION_RATE={MUTATION_RATE}, MUTATION_RATE_IDENTITY={MUTATION_RATE_IDENTITY}, MUTATION_RATE_SEXUAL={MUTATION_RATE_SEXUAL}, LOG_TO_FILE={LOG_TO_FILE}, logfile_path={logfile_path}, LOG_INTERVAL={LOG_INTERVAL}, ALLOW_ASEXUAL={ALLOW_ASEXUAL}, ALLOW_SEXUAL={ALLOW_SEXUAL}")
 
 agents=[]
 next_id=0
@@ -661,7 +660,7 @@ BASE_WIDTH, BASE_HEIGHT = 1920, 1080  # Base canvas size
 ASPECT_RATIO = BASE_WIDTH / BASE_HEIGHT  # 1.78:1
 MIN_WIDTH, MAX_WIDTH = 600, 3000  # Canvas width constraints
 CELL_SIZE = int(800 / GRID_SIZE)  # Dynamic cell size
-HISTO_BINS = 10  # Histogram bin count
+HISTO_BINS = 20  # Histogram bin count
 SCATTERPLOT_ENABLED = True  # Toggle scatterplot
 GRID_OFFSET_X, GRID_OFFSET_Y = 40, 50
 GRAPH1_OFFSET_X, GRAPH1_OFFSET_Y = 880, 50  # Population/CC ratio/Female ratio
@@ -681,8 +680,19 @@ PINK = (255, 105, 180)
 LIGHT_PINK = (255, 182, 193)
 
 def draw_visualization(screen, agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, female_ratio_history, total_score, population, font, turn, elapsed, paused, text_cache, simulation_ended=False):
+    """This uses pygame to display simulation state parameters at the end of a turn. With increasing game complexity and increasing sophistication of the display features, this is destined to becoming a bit of a resource hog, both in terms of performance and of developmental effort. Currently, the display should take about 5% of processing time if drawn every turn. It is always possible to set DRAW_INTERVAL to a value >1 and only draw the display every couple of turns."""
     # Measure total draw time
     start_time = time.perf_counter_ns()
+    #sample runtime (as of 18 Jun 25):
+    #Draw time: 10.9 ms (Canvas: 2.0, Grid: 4.0, Graph1: 0.9, Graph2: 0.3, Graph3: 0.5, Graph4: 1.6, Scatter Gather: 0.9, Scatter Draw: 0.5, Data: 0.2, Button: 0.0, Flip: 1.3)
+    #This means drawing the "grid" (board) is the bottleneck, taking ~35% of total time, or, since canvas+flip are fixed cost of drawing the thing at all, up to ~55% of time spent actually drawing things.
+    #Most of this cost is associated with using a full font and scaling it dynamically to draw the population numbers on the cells, a 100 times over. This could probably be much improved using pre-rendered numerals and just slapping a prepared bit pattern from a 10-dim array on there. But this would create headaches with window scaling. 
+    #Anyway, note to self, pre-rendering numerals is the first thing to look into if performance becomes an issue that can no longer be ignored.
+    #Also, consider looking into pygame.HWSURFACE:
+    # #screen = pygame.display.set_mode((1920, 1080), pygame.HWSURFACE | pygame.DOUBLEBUF)
+    # #renderer = pygame._sdl2.video.Renderer.from_window(pygame.display.get_window())
+    # #texture = renderer.create_texture(pygame.SDL_PIXELFORMAT_RGBA8888, 1920, 1080)
+    # this could cut flip from say 1.5 ms to 1.0 ms by giving the bitmap to the GPU as a "texture" to draw. Not worth the effort at this point, especially since the feature is "experimental".
     
     # Canvas setup
     canvas_start = time.perf_counter_ns()
@@ -815,7 +825,7 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     pygame.draw.rect(screen, BLACK, (s_graph2_offset_x, s_graph2_offset_y, int(500 * scale), int(300 * scale)), 1)
     label_text = "Offspring"
     if ALLOW_SEXUAL:
-        label_text += " / M.investment (R) / F.choice (pink)"
+        label_text += " / M.investm / F.choice"
     hist_label = font.render(label_text, True, BLACK)
     hist_label = pygame.transform.smoothscale_by(hist_label, scale)
     screen.blit(hist_label, (s_graph2_offset_x, s_graph2_offset_y - int(30 * scale)))
@@ -925,7 +935,7 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     # Draw xenophobia histogram and identity scatterplot (graph4)
     graph4_start = time.perf_counter_ns()
     pygame.draw.rect(screen, BLACK, (s_graph4_offset_x, s_graph4_offset_y, int(500 * scale), int(300 * scale)), 1)
-    hist_label = font.render("xenophobia (G)" + (" / Identity(A,B) (B)" if SCATTERPLOT_ENABLED else ""), True, BLACK)
+    hist_label = font.render("Xenophobia " + (" / Identity(A,B)" if SCATTERPLOT_ENABLED else ""), True, BLACK)
     hist_label = pygame.transform.smoothscale_by(hist_label, scale)
     screen.blit(hist_label, (s_graph4_offset_x, s_graph4_offset_y - int(30 * scale)))
     xenophobia = [agent.ingroup_preference for agent in agents]
@@ -1044,7 +1054,8 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     data_time_ms = data_time / 1000
     button_time_ms = button_time / 1000
     flip_time_ms = flip_time / 1000
-    print(f"Draw time: {total_time_ms:.1f} ms (Canvas: {canvas_time_ms:.1f}, Grid: {grid_time_ms:.1f}, Graph1: {graph1_time_ms:.1f}, Graph2: {graph2_time_ms:.1f}, Graph3: {graph3_time_ms:.1f}, Graph4: {graph4_time_ms:.1f}, Scatter Gather: {scatter_gather_time_ms:.1f}, Scatter Draw: {scatter_draw_time_ms:.1f}, Data: {data_time_ms:.1f}, Button: {button_time_ms:.1f}, Flip: {flip_time_ms:.1f})")
+    if (turn % PRINT_INTERVAL == 0 or turn < DEBUG_TURNS):
+        print(f"Draw time: {total_time_ms:.1f} ms (Canvas: {canvas_time_ms:.1f}, Grid: {grid_time_ms:.1f}, Graph1: {graph1_time_ms:.1f}, Graph2: {graph2_time_ms:.1f}, Graph3: {graph3_time_ms:.1f}, Graph4: {graph4_time_ms:.1f}, Scatter Gather: {scatter_gather_time_ms:.1f}, Scatter Draw: {scatter_draw_time_ms:.1f}, Data: {data_time_ms:.1f}, Button: {button_time_ms:.1f}, Flip: {flip_time_ms:.1f})")
 
 def handle_button_click(pos, paused, simulation_ended):
     window_width, window_height = pygame.display.get_surface().get_size()
@@ -1084,28 +1095,29 @@ def main(control_queue, param_queue):
     update_constants(params)
 
     # Initialize founding agents
+    print (f"received ingroup_pref1 {params[f"ingroup_pref1"]}, ingroup_pref2  {params[f"ingroup_pref2"]}")
     founders = [(i, params[f"founder{i}"], params[f"strategy{i}"], params[f"tribe{i}"]) for i in range(1, 6)]
     active_founders = [(i, strategy, tribe) for i, active, strategy, tribe in founders if active]
     if not active_founders:
         print("Warning: No founders selected, defaulting to founder1")
         active_founders = [(1, params["strategy1"], params["tribe1"])]
-    if ALLOW_SEXUAL:
+    if params["allow_sexual"]:
         print(f"Spawning {len(active_founders)} breeding pairs (sexual reproduction)")
         for idx, (founder_num, strategy, tribe) in enumerate(active_founders):
             posx, posy = FOUNDER_POSITIONS[idx % len(FOUNDER_POSITIONS)]
             # Male
             append_agent(
                 posx=posx, posy=posy, id=next_id, born=0, sex=0,
-                identity=TRIBE_MAP[tribe], ingroup_preference=0.5 if tribe == "A" else 1.0,
-                strategy=strategy, sexual_selection="balanced",
+                identity=TRIBE_MAP[tribe], ingroup_preference=params[f"ingroup_pref{founder_num}"],
+                strategy=strategy, sexual_selection="fascist",
                 agents=agents
             )
             next_id += 1
             # Female
             append_agent(
                 posx=posx, posy=posy, id=next_id, born=0, sex=1,
-                identity=TRIBE_MAP[tribe], ingroup_preference=0.5 if tribe == "A" else 1.0,
-                strategy=strategy, sexual_selection="balanced",
+                identity=TRIBE_MAP[tribe], ingroup_preference=params[f"ingroup_pref{founder_num}"],
+                strategy=strategy, sexual_selection="fascist",
                 agents=agents
             )
             next_id += 1
@@ -1113,17 +1125,16 @@ def main(control_queue, param_queue):
         print(f"Spawning {len(active_founders)} asexual agents")
         for idx, (founder_num, strategy, tribe) in enumerate(active_founders):
             posx, posy = FOUNDER_POSITIONS[idx % len(FOUNDER_POSITIONS)]
-            # Asexual agent (no sex specified)
+            # Asexual agent
             append_agent(
                 posx=posx, posy=posy, id=next_id, born=0,
-                identity=TRIBE_MAP[tribe], ingroup_preference=0.5 if tribe == "A" else 1.0,
+                identity=TRIBE_MAP[tribe], ingroup_preference=params[f"ingroup_pref{founder_num}"],
                 strategy=strategy, sexual_selection="balanced",
                 agents=agents
             )
             next_id += 1
     print(f"Initialized {len(agents)} agents")
     print(f"Before setting turn: {turn if 'turn' in globals() else 'undefined'}")
- 
 
     # initialize Pygame display
     pygame.init()
@@ -1142,7 +1153,7 @@ def main(control_queue, param_queue):
     
         try:
             new_params = param_queue.get_nowait()
-            print(f"Updated params: {new_params}")
+#            print(f"Updated params: {new_params}")
             update_constants(new_params)
         except queue.Empty:
             pass
@@ -1437,22 +1448,23 @@ def main(control_queue, param_queue):
         draw_visualization(screen, agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, female_ratio_history, total_score, population, font, turn,  0, paused, text_cache, True)
         time.sleep(1.0 / FPS)
 
-#######################################################################3
+#######################################################################
+#Tkinter gui (start screen)
 def create_start_screen():
     global screen_width, screen_height
-    screen_width = 1920 #2880
-    screen_height = 1080 #1800
     # Initialize Tkinter window
     root = tk.Tk()
     root.title("The Harshest Mistress - Start Screen")
 
-    # Get screen resolution and set dynamic window size (~30% of screen)
-    screen_width = root.winfo_screenwidth() #2880
-    screen_height = root.winfo_screenheight() #1800
-    window_width = int(screen_width * 0.22) 
-    window_height = int(screen_height * 0.70) 
+    # Get screen resolution and set dynamic window size (~25% of screen width, 75% height)
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    window_width = int(screen_width * 0.25)
+    window_height = int(screen_height * 0.75)
     root.geometry(f"{window_width}x{window_height}")
     root.resizable(True, True)
+    root.minsize(300, 500)
+    root.maxsize(int(screen_width * 0.5), int(screen_height ))
 
     # Parameters dictionary
     params = {
@@ -1470,274 +1482,245 @@ def create_start_screen():
         "logfile": tk.StringVar(value=logfile_path),
         "log_turns": tk.StringVar(value="100"),
         "allow_asexual": tk.BooleanVar(value=False),
-        "allow_sexual": tk.BooleanVar(value=True),        
-        "founder1": tk.BooleanVar(value=True),        
+        "allow_sexual": tk.BooleanVar(value=True),
+        "founder1": tk.BooleanVar(value=True),
         "strategy1": tk.StringVar(value="TFT"),
         "tribe1": tk.StringVar(value="A"),
-        "founder2": tk.BooleanVar(value=False),        
+        "ingroup_pref1": tk.DoubleVar(value=0.5),
+        "founder2": tk.BooleanVar(value=False),
         "strategy2": tk.StringVar(value="TFT"),
         "tribe2": tk.StringVar(value="B"),
-        "founder3": tk.BooleanVar(value=False),        
+        "ingroup_pref2": tk.DoubleVar(value=0.5),
+        "founder3": tk.BooleanVar(value=False),
         "strategy3": tk.StringVar(value="TFT"),
         "tribe3": tk.StringVar(value="C"),
-        "founder4": tk.BooleanVar(value=False),        
+        "ingroup_pref3": tk.DoubleVar(value=0.5),
+        "founder4": tk.BooleanVar(value=False),
         "strategy4": tk.StringVar(value="TFT"),
         "tribe4": tk.StringVar(value="D"),
-        "founder5": tk.BooleanVar(value=False),        
+        "ingroup_pref4": tk.DoubleVar(value=0.5),
+        "founder5": tk.BooleanVar(value=False),
         "strategy5": tk.StringVar(value="TFT"),
         "tribe5": tk.StringVar(value="E"),
+        "ingroup_pref5": tk.DoubleVar(value=0.5),
     }
 
     # Font scaling setup
+    SCALE_EXP = 0.8
     base_font_size = 12
     min_font_size = 8
-    max_font_size = 18
+    max_font_size = 30
     title_font = tkfont.Font(family="Arial", size=base_font_size, weight="bold")
     label_font = tkfont.Font(family="Arial", size=base_font_size)
     small_font = tkfont.Font(family="Arial", size=(base_font_size-2))
 
-   # Parameter change callback
+    # Display variables for ingroup_pref sliders
+    ingroup_display = {}
+    for i in range(1, 6):
+        ingroup_display[i] = tk.StringVar()
+        def update_display(i=i):
+            ingroup_display[i].set(f"{params[f'ingroup_pref{i}'].get():.2f}")
+        params[f"ingroup_pref{i}"].trace("w", lambda *args, i=i: update_display(i))
+        update_display(i)  # Initialize display
+
+    # Parameter change callback
     def on_param_change(*args):
         param_values = {key: var.get() for key, var in params.items()}
         param_queue.put(param_values)
 
-    # Trace all params except checkboxes (handled separately)
+    # Trace all params except checkboxes
     for key, var in params.items():
-        if key not in ["allow_asexual", "allow_sexual"]:
+        if key not in ["allow_asexual", "allow_sexual", "log_to_file", "founder1", "founder2", "founder3", "founder4", "founder5"]:
             var.trace("w", on_param_change)
 
     sim_process = None
     control_queue = Queue()
     param_queue = Queue()
-   
+
     def update_fonts(event=None):
-        # Scale font size based on window size
         new_width = root.winfo_width()
         new_height = root.winfo_height()
-        scale_factor = min(new_width / window_width, new_height / window_height)
+        scale_factor = min((new_width / window_width) ** SCALE_EXP, (new_height / window_height) ** SCALE_EXP)
         new_font_size = int(base_font_size * scale_factor)
         new_font_size = max(min_font_size, min(new_font_size, max_font_size))
         title_font.configure(size=new_font_size + 2)
         label_font.configure(size=new_font_size)
-        # Update canvas scroll region
+        small_font.configure(size=max(new_font_size - 2, min_font_size))
+
+    def update_scroll_region(event=None):
+        main_frame.update_idletasks()
         canvas.configure(scrollregion=canvas.bbox("all"))
-  
+
     def select_logfile():
         filepath = filedialog.asksaveasfilename(defaultextension=".log", filetypes=[("log files", "*.log"), ("txt files", "*.txt"), ("All files", "*.*")])
         if filepath:
             params["logfile"].set(filepath)
 
-    # Bind resize event
     root.bind("<Configure>", update_fonts)
 
-    # Main canvas for scrolling
-    canvas = tk.Canvas(root)
+    def update_canvas_alignment(event=None):
+        canvas.coords(canvas.create_window(0, 0, window=main_frame, anchor="n"), event.width / 2, 0)
+
+    canvas = tk.Canvas(root, width=window_width, height=window_height)
     scrollbar_y = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
     scrollbar_x = tk.Scrollbar(root, orient="horizontal", command=canvas.xview)
     canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
-
-    # Layout scrollbars and canvas
     scrollbar_y.pack(side="right", fill="y")
     scrollbar_x.pack(side="bottom", fill="x")
     canvas.pack(side="left", fill="both", expand=True)
+    canvas.bind("<Configure>", update_canvas_alignment)
 
-    # Main frame inside canvas
+    #tk is now drawing "frames", i.e. main_frame, and within it rules_frame, founders_frame, reproduction_frame, logging_frame, button_frame, some of them with subframes to achieve a html-table like structure of gui elements
     main_frame = tk.Frame(canvas)
-    canvas.create_window((0, 0), window=main_frame, anchor="n")
+    canvas.create_window((window_width/2, 0), window=main_frame, anchor="n")
 
-    # Title
+    main_frame.bind("<Configure>", update_scroll_region)
+
     title_label = tk.Label(main_frame, text="The Harshest Mistress", font=title_font)
-    title_label.pack(pady=10)
+    title_label.pack(pady=5)
     subtitle_label = tk.Label(main_frame, text="Prisoner's Dilemma evolved", font=label_font)
-    subtitle_label.pack(pady=10)
-    
-    ############ tkinter gui elements
+    subtitle_label.pack(pady=5)
 
-    rules_frame = tk.Frame(main_frame)
-    rules_frame.pack(pady=20)
-
-    # Title
-    tk.Label(rules_frame, text="game rules", font=label_font).pack()
-
-    # Entry row (two text fields with labels on left)
-    entry_row = tk.Frame(rules_frame)
-    entry_row.pack(fill="x", pady=5)
-
-# Number of turns entry
-    tk.Label(entry_row, text="turns:", font=label_font).grid(row=0, column=0, sticky="e", padx=5)
-    turns_subframe = tk.Frame(entry_row)
+    rules_col='#d0d0f0'
+    rules_frame = tk.Frame(main_frame, bg=rules_col)
+    rules_frame.pack(pady=10)
+    tk.Label(rules_frame, text="game rules", font=label_font, bg=rules_col).pack()
+    entry_row = tk.Frame(rules_frame, bg=rules_col)
+    entry_row.pack(fill="x", pady=2)
+    tk.Label(entry_row, text="turns:", font=label_font, bg=rules_col).grid(row=0, column=0, sticky="e", padx=5)
+    turns_subframe = tk.Frame(entry_row, bg=rules_col)
     turns_subframe.grid(row=0, column=1, sticky="w", padx=5)
     turns_entry = tk.Entry(turns_subframe, textvariable=params["num_turns"], width=5)
     turns_entry.pack(side="left")
-    entry_row.grid_columnconfigure(1, weight=1)  # Expand subframe
-
-
-    # Interaction depth entry
-    tk.Label(entry_row, text="depth:", font=label_font).grid(row=0, column=2, sticky="e", padx=5)
-    depth_subframe = tk.Frame(entry_row)
+    entry_row.grid_columnconfigure(1, weight=1)
+    tk.Label(entry_row, text="depth:", font=label_font, bg=rules_col).grid(row=0, column=2, sticky="e", padx=5)
+    depth_subframe = tk.Frame(entry_row, bg=rules_col)
     depth_subframe.grid(row=0, column=3, sticky="w", padx=5)
     depth_entry = tk.Entry(depth_subframe, textvariable=params["interaction_depth"], width=3)
     depth_entry.pack(side="left")
-    entry_row.grid_columnconfigure(3, weight=1)  # Expand subframe
+    entry_row.grid_columnconfigure(3, weight=1)
 
-    # Slider row (five vertical sliders with labels above)
-    slider_row = tk.Frame(rules_frame)
-    slider_row.pack(fill="x", pady=5)
-
-    # Energy slider
-    tk.Label(slider_row, text="energy", font=small_font).grid(row=0, column=0, padx=5)
-    energy_slider = tk.Scale(slider_row, from_=10, to=200, resolution=5, orient=tk.VERTICAL, variable=params["base_energy"])
+    slider_row = tk.Frame(rules_frame, bg=rules_col)
+    slider_row.pack(fill="x", pady=2)
+    tk.Label(slider_row, text="energy", font=small_font, bg=rules_col).grid(row=0, column=0, padx=5)
+    energy_slider = tk.Scale(slider_row, bg=rules_col, from_=10, to=200, resolution=5, orient=tk.VERTICAL, variable=params["base_energy"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     energy_slider.grid(row=1, column=0, padx=5)
-
-    # Consumption slider
-    tk.Label(slider_row, text="consumpt", font=small_font).grid(row=0, column=1, padx=5)
-    consumption_slider = tk.Scale(slider_row, from_=1, to=50, resolution=1, orient=tk.VERTICAL, variable=params["consumption"])
+    tk.Label(slider_row, text="consumpt", font=small_font, bg=rules_col).grid(row=0, column=1, padx=5)
+    consumption_slider = tk.Scale(slider_row, bg=rules_col, from_=1, to=50, resolution=1, orient=tk.VERTICAL, variable=params["consumption"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     consumption_slider.grid(row=1, column=1, padx=5)
-
-    # Migration rate slider
-    tk.Label(slider_row, text="migration", font=small_font).grid(row=0, column=2, padx=5)
-    migrate_slider = tk.Scale(slider_row, from_=0.0, to=0.5, resolution=0.05, orient=tk.VERTICAL, variable=params["migration_rate"])
+    tk.Label(slider_row, text="migration", font=small_font, bg=rules_col).grid(row=0, column=2, padx=5)
+    migrate_slider = tk.Scale(slider_row, bg=rules_col, from_=0.0, to=0.5, resolution=0.05, orient=tk.VERTICAL, variable=params["migration_rate"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     migrate_slider.grid(row=1, column=2, padx=5)
-
-    # Migration cost slider
-    tk.Label(slider_row, text="migr. cost", font=small_font).grid(row=0, column=3, padx=5)
-    migcost_slider = tk.Scale(slider_row, from_=0, to=25, resolution=1, orient=tk.VERTICAL, variable=params["migration_cost"])
+    tk.Label(slider_row, text="migr. cost", font=small_font, bg=rules_col).grid(row=0, column=3, padx=5)
+    migcost_slider = tk.Scale(slider_row, bg=rules_col, from_=0, to=25, resolution=1, orient=tk.VERTICAL, variable=params["migration_cost"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     migcost_slider.grid(row=1, column=3, padx=5)
-
-    # Aging penalty slider
-    tk.Label(slider_row, text="aging", font=small_font).grid(row=0, column=4, padx=5)
-    aging_slider = tk.Scale(slider_row, from_=0.0, to=1.0, resolution=0.1, orient=tk.VERTICAL, variable=params["aging_penalty"])
+    tk.Label(slider_row, text="aging", font=small_font, bg=rules_col).grid(row=0, column=4, padx=5)
+    aging_slider = tk.Scale(slider_row, bg=rules_col, from_=0.0, to=1.0, resolution=0.1, orient=tk.VERTICAL, variable=params["aging_penalty"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     aging_slider.grid(row=1, column=4, padx=5)
 
-    #founders frame
-    founders_frame = tk.Frame(main_frame)
-    founders_frame.pack(pady=20)
-    tk.Label(founders_frame, text="founder population", font=label_font).pack()
- 
-    # Column row (five columns of checkbox and two OptionMenus)
-    column_row = tk.Frame(founders_frame)
-    column_row.pack(fill="x", pady=5)
-
-    # Define columns
-    founder_labels=["top-left", "lower-right", "lower-left", "top-right", "center"]
+    founders_col='#d0f0d0'
+    founders_frame = tk.Frame(main_frame, bg=founders_col)
+    founders_frame.pack(pady=12)
+    tk.Label(founders_frame, text="founder population", font=label_font, bg=founders_col).pack()
+    tk.Label(founders_frame, text="(set strategy, tribe, ingroup preference)", font=small_font, bg=founders_col).pack()
+    column_row = tk.Frame(founders_frame, bg=founders_col)
+    column_row.pack(fill="x", pady=2)
+    founder_labels = ["top-left", "lower-right", "lower-left", "top-right", "center"]
     for i in range(1, 6):
-        col = i - 1  # Grid column index (0 to 4)
-        # Checkbox
-        tk.Label(column_row, text=founder_labels[col], font=small_font).grid(row=0, column=col, sticky="w", padx=5)
-        tk.Checkbutton(column_row, variable=params[f"founder{i}"]).grid(row=1, column=col, sticky="w", padx=5)
-
-        # Strategy OptionMenu
+        col = i - 1
+        tk.Label(column_row, text=founder_labels[col], font=small_font, bg=founders_col).grid(row=0, column=col, sticky="w", padx=5)
+        tk.Checkbutton(column_row, bg=founders_col, variable=params[f"founder{i}"]).grid(row=1, column=col, sticky="w", padx=5)
         tk.OptionMenu(column_row, params[f"strategy{i}"], "TFT", "TFTT", "AC", "AD", "GT", "random").grid(row=2, column=col, sticky="w", padx=5)
-
-        # Tribe OptionMenu
         tk.OptionMenu(column_row, params[f"tribe{i}"], "A", "B", "C", "D", "E").grid(row=3, column=col, sticky="w", padx=5)
+        ttk.Scale(column_row, from_=0.0, to=1.0, orient=tk.VERTICAL, variable=params[f"ingroup_pref{i}"], length=int(50 * min((window_width/422) ** SCALE_EXP, 1.5))).grid(row=4, column=col, padx=5)
+        tk.Label(column_row, textvariable=ingroup_display[i], font=small_font, width=4, bg=founders_col).grid(row=5, column=col, padx=5)
 
+    reproduction_col='#f0d0d0'
+    reproduction_frame = tk.Frame(main_frame, bg=reproduction_col)
+    reproduction_frame.pack(pady=10)
+    tk.Label(reproduction_frame, text="reproduction", font=label_font, bg=reproduction_col).pack()
+    checkbox_row = tk.Frame(reproduction_frame, bg=reproduction_col)
+    checkbox_row.pack(fill="x", pady=2)
 
-    #reproduction frame
-    reproduction_frame = tk.Frame(main_frame)
-    reproduction_frame.pack(pady=20)
-
-    # Title
-    tk.Label(reproduction_frame, text="reproduction", font=label_font).pack()
-
-    # reproduction checkboxes
-    checkbox_row = tk.Frame(reproduction_frame)
-    checkbox_row.pack(fill="x", pady=5)
-
-    # checkbox interaction logic
     def on_checkbox_change(*args):
         if not params["allow_asexual"].get() and not params["allow_sexual"].get():
-            # If both would be False, set the other to True
-            if args[0] == "allow_asexual":  # Asexual was deselected
+            if args[0] == "allow_asexual":
                 params["allow_sexual"].set(True)
-            else:  # Sexual was deselected
+            else:
                 params["allow_asexual"].set(True)
 
     params["allow_asexual"].trace("w", lambda *args: on_checkbox_change("allow_asexual"))
     params["allow_sexual"].trace("w", lambda *args: on_checkbox_change("allow_sexual"))
 
-    # Asexual checkbox
-    tk.Label(checkbox_row, text="asexual:", font=small_font).grid(row=0, column=0, sticky="e", padx=5)
-    asexual_check = tk.Checkbutton(checkbox_row, variable=params["allow_asexual"])
+    tk.Label(checkbox_row, text="asexual:", font=small_font, bg=reproduction_col).grid(row=0, column=0, sticky="e", padx=5)
+    asexual_check = tk.Checkbutton(checkbox_row, bg=reproduction_col, variable=params["allow_asexual"])
     asexual_check.grid(row=0, column=1, sticky="w", padx=5)
-
-    # Sexual checkbox
-    tk.Label(checkbox_row, text="sexual:", font=small_font).grid(row=0, column=2, sticky="e", padx=5)
-    sexual_check = tk.Checkbutton(checkbox_row, variable=params["allow_sexual"])
+    tk.Label(checkbox_row, text="sexual:", font=small_font, bg=reproduction_col).grid(row=0, column=2, sticky="e", padx=5)
+    sexual_check = tk.Checkbutton(checkbox_row, bg=reproduction_col, variable=params["allow_sexual"])
     sexual_check.grid(row=0, column=3, sticky="w", padx=5)
 
-    tk.Label(reproduction_frame, text="mutation rates", font=small_font).pack()
-    
-    # Slider row (three vertical sliders with labels above)
-    slider_row = tk.Frame(reproduction_frame)
-    slider_row.pack(fill="x", pady=5)
-
-    # Mutation rate slider
-    tk.Label(slider_row, text="individual", font=small_font).grid(row=0, column=0, padx=5)
-    mutation_slider = tk.Scale(slider_row, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate"])
+    tk.Label(reproduction_frame, text="mutation rates", font=small_font, bg=reproduction_col).pack()
+    slider_row = tk.Frame(reproduction_frame, bg=reproduction_col)
+    slider_row.pack(fill="x", pady=2)
+    tk.Label(slider_row, text="individual", font=small_font, bg=reproduction_col).grid(row=0, column=0, padx=5)
+    mutation_slider = tk.Scale(slider_row, bg=reproduction_col, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     mutation_slider.grid(row=1, column=0, padx=5)
-
-    # Tribal mutation rate slider
-    tk.Label(slider_row, text="tribal", font=small_font).grid(row=0, column=1, padx=5)
-    tribal_slider = tk.Scale(slider_row, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate_tribal"])
+    tk.Label(slider_row, text="tribal", font=small_font, bg=reproduction_col).grid(row=0, column=1, padx=5)
+    tribal_slider = tk.Scale(slider_row, bg=reproduction_col, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate_tribal"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     tribal_slider.grid(row=1, column=1, padx=5)
-
-    # Sexual mutation rate slider
-    tk.Label(slider_row, text="sexual", font=small_font).grid(row=0, column=2, padx=5)
-    sexual_slider = tk.Scale(slider_row, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate_sexual"])
+    tk.Label(slider_row, text="sexual", font=small_font, bg=reproduction_col).grid(row=0, column=2, padx=5)
+    sexual_slider = tk.Scale(slider_row, bg=reproduction_col, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate_sexual"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     sexual_slider.grid(row=1, column=2, padx=5)
 
-    #logging frame
     logging_frame = tk.Frame(main_frame)
-    logging_frame.pack(pady=20)
-
-    # log_to_file checkbox
+    logging_frame.pack(pady=10)
+    tk.Label(logging_frame, text="logging", font=label_font).pack()
     logcheckbox_row = tk.Frame(logging_frame)
-    logcheckbox_row.pack(fill="x", pady=5)
-
+    logcheckbox_row.pack(fill="x", pady=2)
     tk.Label(logcheckbox_row, text="log to file", font=label_font).grid(row=0, column=0, sticky="e", padx=5)
-    log_check = tk.Checkbutton(logcheckbox_row, variable=params["log_to_file"])
+    log_check = ttk.Checkbutton(logcheckbox_row, variable=params["log_to_file"])
     log_check.grid(row=0, column=1, sticky="w", padx=5)
 
-    # logfile picker dialog
     logfile_frame = tk.Frame(logging_frame)
-    logfile_frame.pack(fill=tk.X, pady=5)
-
-    logfile_entry = tk.Entry(logfile_frame, textvariable=params["logfile"], width=30)
+    logfile_frame.pack(fill=tk.X, pady=2)
+    logfile_entry = tk.Entry(logfile_frame, textvariable=params["logfile"], width=20)
     logfile_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
     tk.Button(logfile_frame, text="Browse", command=select_logfile).pack(side=tk.LEFT, padx=5)
 
     logturns_row = tk.Frame(logging_frame)
-    logturns_row.pack(fill="x", pady=5)
-
+    logturns_row.pack(fill="x", pady=2)
     tk.Label(logturns_row, text="logging turns:", font=label_font).grid(row=0, column=0, sticky="e", padx=5)
     logturns_subframe = tk.Frame(logturns_row)
     logturns_subframe.grid(row=0, column=1, sticky="w", padx=5)
     logturns_entry = tk.Entry(logturns_subframe, textvariable=params["log_turns"], width=5)
     logturns_entry.pack(side="left")
-    logturns_row.grid_columnconfigure(3, weight=1)
+    logturns_row.grid_columnconfigure(1, weight=1)
 
-    #buttons frame
     button_frame = tk.Frame(main_frame)
-    button_frame.pack(pady=20)
-
+    button_frame.pack(pady=10)
     start_button = tk.Button(button_frame, text="Start", width=10)
-    start_button.pack(side=tk.LEFT, padx=10)
-
+    start_button.pack(side=tk.LEFT, padx=5)
 
     def toggle_simulation():
         nonlocal sim_process
         if sim_process is None:
-            # Send initial parameters
             param_values = {key: var.get() for key, var in params.items()}
             print(f"Sending initial param_values: {param_values}")
+            # Clear param_queue and add dummy write
+            while not param_queue.empty():
+                try:
+                    param_queue.get_nowait()
+                except Queue.Empty:
+                    break
+            param_queue.put({"dummy": True})
+            param_queue.get()  # Remove dummy
+
             param_queue.put(param_values)
-            # Start simulation process
+            time.sleep(0.1)  # 100ms delay to ensure queue write
             sim_process = Process(target=main, args=(control_queue, param_queue))
             sim_process.start()
             start_button.config(text="Stop")
         else:
-            # Stop simulation
             control_queue.put("stop")
             if sim_process:
                 sim_process.terminate()
@@ -1747,7 +1730,6 @@ def create_start_screen():
 
     start_button.config(command=toggle_simulation)
 
-    # Exit button
     def exit_app():
         nonlocal sim_process
         if sim_process:
@@ -1758,9 +1740,11 @@ def create_start_screen():
         root.destroy()
         sys.exit(0)
 
-    tk.Button(button_frame, text="Exit", command=exit_app, width=10).pack(side="left", padx=10)
+    tk.Button(button_frame, text="Exit", command=exit_app, width=10).pack(side=tk.LEFT, padx=5)
+    main_frame.update_idletasks()
+    canvas.configure(scrollregion=canvas.bbox("all"))
 
-
+###############################################################
     # Run Tkinter main loop
     root.mainloop()
 
