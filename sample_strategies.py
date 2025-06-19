@@ -14,51 +14,98 @@ sample_strategies = {
         "remote_weights": np.zeros((2, 2), dtype=np.float16),
         "recent_weights": np.zeros((6, 6), dtype=np.float16)
     },
-    "TFT": {  # Tit-for-Tat
+    "TFT": {  # Tit-for-Tat: Copy opponent's last action
         "cooperation_bias": np.float16(0.0),
-        "linear_weights": np.array([0.5, 0, 0, 0, 0, 10, 0, 0], dtype=np.float16),
+        "linear_weights": np.array([0, 0, 0, 0, 0, 10.0, 0, 0], dtype=np.float16),
         "remote_weights": np.zeros((2, 2), dtype=np.float16),
         "recent_weights": np.zeros((6, 6), dtype=np.float16)
     },
-    "TFTT": {  # Tit-for-Two-Tats
+    "TFTT": {  # Tit-for-Two-Tats: Defect after two consecutive defections
         "cooperation_bias": np.float16(5.0),
-        "linear_weights": np.array([0.5, 0, 0, 0, 0, 0, 0, 0], dtype=np.float16),
+        "linear_weights": np.array([0, 0, 0, 0, 0, -2.0, -2.0, 0], dtype=np.float16),
         "remote_weights": np.zeros((2, 2), dtype=np.float16),
         "recent_weights": np.zeros((6, 6), dtype=np.float16)
     },
-    "GT": {  # Grim Trigger
+    "GT": {  # Grim Trigger: Defect permanently after opponent's first defection
         "cooperation_bias": np.float16(5.0),
-        "linear_weights": np.array([-2, 0, 0, 0, 0, 0, 0, 0], dtype=np.float16),
-        "remote_weights": np.zeros((2, 2), dtype=np.float16),
+        "linear_weights": np.array([-2.0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float16),
+        "remote_weights": np.array([[-10.0, 0], [0, 0]], dtype=np.float16),
         "recent_weights": np.zeros((6, 6), dtype=np.float16)
     },
     "TFTT-Fair1": {  # Fair-minded TFTT, mild
         "cooperation_bias": np.float16(5.0),
         "linear_weights": np.array([0.5, 0, -1.0, -1.0, 0, 0, 0, 0], dtype=np.float16),
         "remote_weights": np.zeros((2, 2), dtype=np.float16),
-        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+        "recent_weights": np.array([[0]*6 for _ in range(6)], dtype=np.float16)
     },
     "TFTT-Fair2": {  # Fair-minded TFTT, moderate
         "cooperation_bias": np.float16(5.0),
         "linear_weights": np.array([0.5, 0, -2.0, -2.0, 0, 0, 0, 0], dtype=np.float16),
         "remote_weights": np.zeros((2, 2), dtype=np.float16),
-        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+        "recent_weights": np.array([[0]*6 for _ in range(6)], dtype=np.float16)
     },
     "TFTT-Fair3": {  # Fair-minded TFTT, strong
         "cooperation_bias": np.float16(5.0),
         "linear_weights": np.array([0.5, 0, -3.0, -3.0, 0, 0, 0, 0], dtype=np.float16),
         "remote_weights": np.zeros((2, 2), dtype=np.float16),
+        "recent_weights": np.array([[0]*6 for _ in range(6)], dtype=np.float16)
+    },
+    "Pavlov": {  # Win-Stay, Lose-Shift
+        "cooperation_bias": np.float16(0.0),
+        "linear_weights": np.array([0, 0, -5.0, 0, 0, 5.0, 0, 0], dtype=np.float16),
+        "remote_weights": np.zeros((2, 2), dtype=np.float16),
+        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+    },
+    "FTFT": {  # Forgiving Tit-for-Tat
+        "cooperation_bias": np.float16(2.5),
+        "linear_weights": np.array([0, 0, 0, 0, 0, 5.0, 0, 0], dtype=np.float16),
+        "remote_weights": np.zeros((2, 2), dtype=np.float16),
+        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+    },
+    "random": {  # Random 50/50
+        "cooperation_bias": np.float16(0.0),
+        "linear_weights": np.zeros(8, dtype=np.float16),
+        "remote_weights": np.zeros((2, 2), dtype=np.float16),
+        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+    },
+    "STFT": {  # Suspicious Tit-for-Tat
+        "cooperation_bias": np.float16(-5.0),
+        "linear_weights": np.array([0, 0, 0, 0, 0, 10.0, 0, 0], dtype=np.float16),
+        "remote_weights": np.zeros((2, 2), dtype=np.float16),
+        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+    },
+    "TFTTT": {  # Tit-for-Three-Tats
+        "cooperation_bias": np.float16(5.0),
+        "linear_weights": np.array([0, 0, 0, 0, 0, -2.0, -2.0, -2.0], dtype=np.float16),
+        "remote_weights": np.zeros((2, 2), dtype=np.float16),
+        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+    },
+    "GTFT": {  # Generous Tit-for-Tat
+        "cooperation_bias": np.float16(1.0),
+        "linear_weights": np.array([0, 0, 0, 0, 0, 5.0, 0, 0], dtype=np.float16),
+        "remote_weights": np.zeros((2, 2), dtype=np.float16),
+        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+    },
+#long-term "high-trust" related strategies
+    "TC": { # Trusting-Cooperator: cooperate if good long-term experience
+        "cooperation_bias": np.float16(0.0),
+        "linear_weights": np.zeros(8, dtype=np.float16),
+        "remote_weights": np.array([[5.0, 0], [0, 0]], dtype=np.float16),
+        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+    },
+    "MT": { #Mutual-Trust: cooperate if history of mutual cooperation
+        "cooperation_bias": np.float16(0.0),
+        "linear_weights": np.zeros(8, dtype=np.float16),
+        "remote_weights": np.array([[2.5, 0], [0, 2.5]], dtype=np.float16),
+        "recent_weights": np.zeros((6, 6), dtype=np.float16)
+    },
+    "TBV": {#Trust-but-Verify
+        "cooperation_bias": np.float16(2.5),
+        "linear_weights": np.array([0, 0, 0, 0, 0, -2.0, -2.0, 0], dtype=np.float16),
+        "remote_weights": np.array([[2.5, 0], [0, 0]], dtype=np.float16),
         "recent_weights": np.zeros((6, 6), dtype=np.float16)
     }
 }
-
-# Initialize weights
-sample_strategies["TFT"]["recent_weights"][3, 3] = np.float16(2.5)  # opp_last1
-sample_strategies["TFTT"]["recent_weights"][3, 4] = sample_strategies["TFTT"]["recent_weights"][4, 3] = np.float16(5)
-sample_strategies["GT"]["remote_weights"][0, 0] = np.float16(-10)  # opp_action_avg
-sample_strategies["TFTT-Fair1"]["recent_weights"][3, 4] = sample_strategies["TFTT-Fair1"]["recent_weights"][4, 3] = np.float16(5)
-sample_strategies["TFTT-Fair2"]["recent_weights"][3, 4] = sample_strategies["TFTT-Fair2"]["recent_weights"][4, 3] = np.float16(5)
-sample_strategies["TFTT-Fair3"]["recent_weights"][3, 4] = sample_strategies["TFTT-Fair3"]["recent_weights"][4, 3] = np.float16(5)
 
 
 #Predefined sexual strategies
@@ -93,4 +140,3 @@ sexual_strategies = {
         "ladys_choice": np.array([0.25, 0.25, 0.25, 0.25], dtype=np.float16)
     }
 }
-
