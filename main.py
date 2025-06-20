@@ -16,6 +16,16 @@ import os
 
 from sample_strategies import sample_strategies, sexual_strategies
 
+#todo
+#debug ladys_choice; normalization of parameters (observed/expected range of mate scores)?
+#include male_investment in "caring" calculation?
+#impact of "ingroup_preference" modifier too small?
+#identity visualization scatterplot
+#better migration mechanic (self.mobility gene?)
+# better migration mechanic (move away from overcrowded cells, but not from potential mates)
+#batch mode
+#database dumpfile option
+
 # Global initialization
 turn = 0
 FPS = 20 
@@ -79,7 +89,7 @@ games_played =  defaultdict(int)
 
 class Agent:
     def __init__(self, posx=None, posy=None, energy=30, id=None, parent=None, born=None, cooperation_bias=None, linear_weights=None, 
-                 remote_weights=None, recent_weights=None, identity=None, ingroup_preference=None, sex=None, male_bias=None, male_investment=None, mating_display=None, chivalry=None, ladys_choice=None):
+                 remote_weights=None, recent_weights=None, contrition=1.0, bigotry=1.0, identity=None, ingroup_preference=None, sex=None, male_bias=None, male_investment=None, mating_display=None, chivalry=None, ladys_choice=None):
         self.posx = posx
         self.posy = posy
         self.energy = energy
@@ -94,10 +104,13 @@ class Agent:
             self.cooperation_bias = np.float16(np.random.uniform(-5, 5))
         else:
             self.cooperation_bias = np.float16(cooperation_bias)
-        if linear_weights is None:
-            self.linear_weights = np.random.uniform(-2, 2, 8).astype(np.float16)
-        else:
-            self.linear_weights = np.array(linear_weights, dtype=np.float16)
+ 
+ #linear_weights discontinued
+        self.linear_weights=0
+ #       if linear_weights is None:
+ #           self.linear_weights = np.random.uniform(-2, 2, 8).astype(np.float16)
+ #       else:
+ #           self.linear_weights = np.array(linear_weights, dtype=np.float16)
         if remote_weights is None:
             self.remote_weights = np.zeros((2, 2), dtype=np.float16)
             self.remote_weights[0, 0] = np.random.uniform(-1, 1)
@@ -113,6 +126,14 @@ class Agent:
                     self.recent_weights[i, j] = self.recent_weights[j, i] = np.random.uniform(-0.5, 0.5)
         else:
             self.recent_weights = np.array(recent_weights, dtype=np.float16)
+        if contrition is None:
+            self.contrition = (1.0).astype(np.float16)
+        else:
+            self.contrition = np.array(contrition, dtype=np.float16)
+        if bigotry is None:
+            self.bigotry = (1.0).astype(np.float16)
+        else:
+            self.bigotry = np.array(bigotry, dtype=np.float16)
         if identity is None:
             self.identity = np.random.uniform(0, 10, 5).astype(np.float16)
         else:
@@ -153,14 +174,23 @@ class Agent:
         if input_vector[2] == 0:	#empty history 
             total_output=self.cooperation_bias
         else:
-            remote_vector = input_vector[:2]  # [-1, 1]
-            recent_vector = input_vector[2:]  # {-1, 1, 0}
+            scaled_vector = input_vector.copy()
+            for i in range(2, 5):  # self_last1/2/3
+                if scaled_vector[i] == -1:
+                    scaled_vector[i] *= self.contrition
+            for i in range(5, 8):  # opp_last1/2/3
+                if scaled_vector[i] == -1:
+                    scaled_vector[i] *= self.bigotry
+
+            remote_vector = scaled_vector[:2]  # [-1, 1]
+            recent_vector = scaled_vector[2:]  # {-1, 1, 0}
             # Apply strategy
-            linear_term = np.dot(input_vector, self.linear_weights)
+#discontinuing linear_weights
+#            linear_term = np.dot(input_vector, self.linear_weights)
             # we are now using an "anti-quadratic form", as in abs(v)^T W v
             remote_term = np.dot(np.abs(remote_vector), np.dot(self.remote_weights, remote_vector))
             recent_term = np.dot(np.abs(recent_vector), np.dot(self.recent_weights, recent_vector))
-            total_output = linear_term + remote_term + recent_term + self.cooperation_bias
+            total_output = remote_term + recent_term + self.cooperation_bias
 
         # sexual dimorphism mechanic
         if ALLOW_SEXUAL:
@@ -180,19 +210,26 @@ class Agent:
 def is_interacting(pos1x, pos1y, pos2x, pos2y):
     return max(abs(pos1x - pos2x), abs(pos1y - pos2y)) <= 1
 
-def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weights, identity, ingroup_preference, male_bias, male_investment, mating_display, chivalry, ladys_choice, parent2_genome=None):
+def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weights, contrition, bigotry, identity, ingroup_preference, male_bias, male_investment, mating_display, chivalry, ladys_choice, parent2_genome=None):
 
     # If parent2_genome provided (sexual reproduction), average genomes
     if parent2_genome:
         cooperation_bias = (cooperation_bias + parent2_genome['cooperation_bias']) / 2
-        linear_weights = (linear_weights + parent2_genome['linear_weights']) / 2
+#        linear_weights = (linear_weights + parent2_genome['linear_weights']) / 2
         remote_weights = (remote_weights + parent2_genome['remote_weights']) / 2
         recent_weights = (recent_weights + parent2_genome['recent_weights']) / 2
+        contrition = (contrition + parent2_genome['contrition']) / 2
+        bigotry = (bigotry + parent2_genome['bigotry']) / 2
         identity = (identity + parent2_genome['identity']) / 2
         ingroup_preference = (ingroup_preference + parent2_genome['ingroup_preference']) / 2
- 
+        male_investment = (male_investment + parent2_genome['male_investment']) / 2
+        mating_display = (mating_display + parent2_genome['mating_display']) / 2
+        chivalry = (chivalry + parent2_genome['chivalry']) / 2
+        ladys_choice = (ladys_choice + parent2_genome['ladys_choice']) / 2
+
     mutated_cooperation_bias = (cooperation_bias + np.random.normal(0, MUTATION_RATE)).astype(np.float16)
-    mutated_linear = linear_weights + np.random.normal(0, MUTATION_RATE, size=8).astype(np.float16)
+#    mutated_linear = linear_weights + np.random.normal(0, MUTATION_RATE, size=8).astype(np.float16)
+    mutated_linear = 0
     mutated_remote = remote_weights.copy()
     mutated_remote[0, 0] += np.random.normal(0, MUTATION_RATE)
     mutated_remote[1, 1] += np.random.normal(0, MUTATION_RATE)
@@ -204,7 +241,10 @@ def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weigh
         for j in range(i + 1, 6):
             delta = np.random.normal(0, MUTATION_RATE)
             mutated_recent[i, j] = mutated_recent[j, i] = mutated_recent[i, j] + delta
+    mutated_contrition = (contrition + np.random.normal(0, MUTATION_RATE)).astype(np.float16)
+    mutated_bigotry = (bigotry + np.random.normal(0, MUTATION_RATE)).astype(np.float16)
     mutated_identity = np.clip(identity + np.random.normal(0, MUTATION_RATE_IDENTITY, size=5), 0, 10).astype(np.float16)
+    
     mutated_ingroup_preference = np.clip(ingroup_preference + np.random.normal(0, MUTATION_RATE_IDENTITY), 0, 10).astype(np.float16)
     if ALLOW_SEXUAL:
         mutated_male_bias = np.float16(male_bias + np.random.normal(0, MUTATION_RATE_SEXUAL))
@@ -219,7 +259,7 @@ def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weigh
         mutated_chivalry=0
         mutated_ladys_choice=(0,0,0,0)
 
-    return mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_identity, mutated_ingroup_preference, mutated_male_bias
+    return mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias
 
 def agent_snapshot(agent, games_played, total_score):
     return {
@@ -234,9 +274,11 @@ def agent_snapshot(agent, games_played, total_score):
         'games_played': games_played[agent.id], #recover from external array
         'total_score': total_score[agent.id], #recover from external array
         'cooperation_bias': agent.cooperation_bias.tolist(),
-        'linear_weights': agent.linear_weights.tolist(),
+#        'linear_weights': agent.linear_weights.tolist(),
         'remote_weights': agent.remote_weights.tolist(),
         'recent_weights': agent.recent_weights.tolist(),
+        'contrition': agent.contrition.tolist(),
+        'bigotry': agent.bigotry.tolist(),
         'identity': agent.identity.tolist(),
         'ingroup_preference': float(agent.ingroup_preference),
         'male_bias': agent.male_bias,
@@ -263,9 +305,12 @@ def append_agent(posx, posy, id, born, identity, ingroup_preference, strategy, s
         id=id,
         born=born,
         cooperation_bias=strategy_params["cooperation_bias"],
-        linear_weights=strategy_params["linear_weights"].copy(),
+        linear_weights=0,
+#        linear_weights=strategy_params["linear_weights"].copy(),
         remote_weights=strategy_params["remote_weights"].copy(),
         recent_weights=strategy_params["recent_weights"].copy(),
+        contrition=strategy_params["contrition"],
+        bigotry=strategy_params["bigotry"],
         identity=np.array(identity, dtype=np.float16),
         ingroup_preference=np.float16(ingroup_preference),
         sex=agent_sex,
@@ -473,15 +518,18 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
   
         # Generate offspring genome
         offspring_sex = random.randint(0, 1)
-        mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, \
+        mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry,\
         mutated_identity, mutated_ingroup_preference, mutated_male_bias = mutate_genome(
-            father.cooperation_bias, father.linear_weights, father.remote_weights, father.recent_weights,
+            father.cooperation_bias, father.linear_weights, father.remote_weights, father.recent_weights, father.contrition, father.bigotry, 
             father.identity, father.ingroup_preference, father.male_bias, father.male_investment, father.mating_display, father.chivalry, father.ladys_choice,
             parent2_genome={
                 'cooperation_bias': mother.cooperation_bias,
-                'linear_weights': mother.linear_weights,
+#                'linear_weights': mother.linear_weights,
+                'linear_weights': 0,
                 'remote_weights': mother.remote_weights,
                 'recent_weights': mother.recent_weights,
+                'contrition': mother.contrition,
+                'bigotry': mother.bigotry,
                 'identity': mother.identity,
                 'ingroup_preference': mother.ingroup_preference,
                 'male_investment': mother.male_investment,
@@ -501,9 +549,12 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
             posx=mother.posx, posy=mother.posy, energy=OFFSPRING_ENERGY,
             id=next_id, parent=(father_id, mother_id), born=turn,
             cooperation_bias=mutated_cooperation_bias,
-            linear_weights=mutated_linear,
+#            linear_weights=mutated_linear,
+            linear_weights=0,
             remote_weights=mutated_remote,
             recent_weights=mutated_recent,
+            contrition=mutated_contrition,
+            bigotry=mutated_bigotry,
             identity=mutated_identity,
             ingroup_preference=mutated_ingroup_preference,
             sex=offspring_sex,
@@ -535,8 +586,8 @@ def pretty_print_agent(agent):
         lines.append(f"  chivalry: {agent['chivalry']:.2f}, male investment: {agent['male_investment']:.2f}, mating display: {agent['mating_display']:.2f}, ladys choice: [{', '.join(f'{x:.2f}' for x in agent['ladys_choice'])}]{bias_label}")
 
     #Prisoner's dilemma strategy parameters. Print matrices: 2x2 lower triangular, then 6x6 lower triangular indented by 2 columns
-    lines.append(f"  bias: {agent['cooperation_bias']:.2f}, linear: [{', '.join(f'{x:.2f}' for x in agent['linear_weights'])}]")    
-    lines.append("  quadratic:")
+    lines.append(f"  bias: {agent['cooperation_bias']:.2f}, contrition: {agent['contrition']:.2f}, bigotry: {agent['bigotry']:.2f}")    
+    lines.append("  strategy matrix:")
     remote = agent['remote_weights']
     for i in range(2):
         row = [f"{remote[i][j]:>7.2f}" for j in range(i + 1)]
@@ -675,7 +726,7 @@ GREEN = (20, 255, 30)
 RED = (255, 20, 30)
 BLUE = (50, 50, 255)
 GRAY = (150, 150, 150)
-YELLOW = (250, 250, 10)
+YELLOW = (220, 220, 0)
 PINK = (255, 105, 180)
 LIGHT_PINK = (255, 182, 193)
 
@@ -835,14 +886,25 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
         ladys_choice_data = [agent.ladys_choice for agent in agents if hasattr(agent, 'ladys_choice')]
         if ladys_choice_data:
             avg_ladys_choice = np.mean(ladys_choice_data, axis=0)
-            if len(avg_ladys_choice) >= 4:  # Ensure at least 4 values
-                bar_width = int(500 * scale) // 4
+            if len(avg_ladys_choice) >= 4:
+                bar_width = int(40 * scale)
+                gap_width = int(30 * scale)
+                min_val = np.min(avg_ladys_choice)
+                max_val = np.max(avg_ladys_choice)
+                y_range = max(1.0, max(abs(min_val), max_val))
+                zero_y = s_graph2_offset_y + int(300 * scale) // 2 if min_val < 0 else s_graph2_offset_y + int(300 * scale)
+                scale_factor = (300 * scale) / (2 * y_range) if min_val < 0 else (300 * scale) / y_range
                 for i in range(4):
-                    x = s_graph2_offset_x + i * bar_width
-                    height = int(avg_ladys_choice[i] * 300 * scale)  # Assume 0-1 range
-                    y = s_graph2_offset_y + int(300 * scale) - height
-                    pygame.draw.rect(screen, LIGHT_PINK, (x, y, bar_width, height))
-    
+                    x = s_graph2_offset_x + i * (bar_width + gap_width)
+                    value = avg_ladys_choice[i]
+                    height = int(value * scale_factor)
+                    if value >= 0:
+                        y = zero_y - height
+                        pygame.draw.rect(screen, LIGHT_PINK, (x, y, bar_width, height))
+                    else:
+                        y = zero_y
+                        pygame.draw.rect(screen, LIGHT_PINK, (x, y, bar_width, -height))    
+
     # Offspring count histogram (omit zero-offspring bin)
     offspring_counts = [len(agent.offspring) for agent in agents if len(agent.offspring) > 0]
     max_bin = 1
@@ -1054,8 +1116,8 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     data_time_ms = data_time / 1000
     button_time_ms = button_time / 1000
     flip_time_ms = flip_time / 1000
-    if (turn % PRINT_INTERVAL == 0 or turn < DEBUG_TURNS):
-        print(f"Draw time: {total_time_ms:.1f} ms (Canvas: {canvas_time_ms:.1f}, Grid: {grid_time_ms:.1f}, Graph1: {graph1_time_ms:.1f}, Graph2: {graph2_time_ms:.1f}, Graph3: {graph3_time_ms:.1f}, Graph4: {graph4_time_ms:.1f}, Scatter Gather: {scatter_gather_time_ms:.1f}, Scatter Draw: {scatter_draw_time_ms:.1f}, Data: {data_time_ms:.1f}, Button: {button_time_ms:.1f}, Flip: {flip_time_ms:.1f})")
+#    if (turn % PRINT_INTERVAL == 0 or turn < DEBUG_TURNS):
+#        print(f"Draw time: {total_time_ms:.1f} ms (Canvas: {canvas_time_ms:.1f}, Grid: {grid_time_ms:.1f}, Graph1: {graph1_time_ms:.1f}, Graph2: {graph2_time_ms:.1f}, Graph3: {graph3_time_ms:.1f}, Graph4: {graph4_time_ms:.1f}, Scatter Gather: {scatter_gather_time_ms:.1f}, Scatter Draw: {scatter_draw_time_ms:.1f}, Data: {data_time_ms:.1f}, Button: {button_time_ms:.1f}, Flip: {flip_time_ms:.1f})")
 
 def handle_button_click(pos, paused, simulation_ended):
     window_width, window_height = pygame.display.get_surface().get_size()
@@ -1129,7 +1191,7 @@ def main(control_queue, param_queue):
             append_agent(
                 posx=posx, posy=posy, id=next_id, born=0,
                 identity=TRIBE_MAP[tribe], ingroup_preference=params[f"ingroup_pref{founder_num}"],
-                strategy=strategy, sexual_selection="balanced",
+                strategy=strategy, sexual_selection="fascist",
                 agents=agents
             )
             next_id += 1
@@ -1289,12 +1351,12 @@ def main(control_queue, param_queue):
         for aid, change in energy_change.items():
             id_to_agent[aid].energy += change
             if turn < DEBUG_TURNS:
-                print(f"Turn {turn}, Agent {aid}: Final energy = {id_to_agent[aid].energy:.2f}")
-                print(f"Turn {turn}, Agent {aid}: Linear weights = {id_to_agent[aid].linear_weights.tolist()}")
-                print(f"Turn {turn}, Agent {aid}: Prop weights = {id_to_agent[aid].remote_weights.tolist()}")
-                print(f"Turn {turn}, Agent {aid}: History weights = {id_to_agent[aid].recent_weights.tolist()}")
-                print(f"Turn {turn}, Agent {aid}: Identity = {id_to_agent[aid].identity.tolist()}")
-                print(f"Turn {turn}, Agent {aid}: Ingroup preference = {id_to_agent[aid].ingroup_preference:.2f}")
+                print(f"Turn {turn}, Agent {aid}: final energy = {id_to_agent[aid].energy:.2f}")
+#                print(f"Turn {turn}, Agent {aid}: Linear weights = {id_to_agent[aid].linear_weights.tolist()}")
+                print(f"Turn {turn}, Agent {aid}: remote weights = {id_to_agent[aid].remote_weights.tolist()}")
+                print(f"Turn {turn}, Agent {aid}: recent weights = {id_to_agent[aid].recent_weights.tolist()}")
+                print(f"Turn {turn}, Agent {aid}: identity = {id_to_agent[aid].identity.tolist()}")
+                print(f"Turn {turn}, Agent {aid}: ingroup preference = {id_to_agent[aid].ingroup_preference:.2f}")
 
     # Step 4: Asexual reproduction
         births = 0
@@ -1316,7 +1378,8 @@ def main(control_queue, param_queue):
                         parent=agent.id,
                         born=turn,
                         cooperation_bias=mutated_cooperation_bias,
-                        linear_weights=mutated_linear,
+#                        linear_weights=mutated_linear,
+                        linear_weights=0,
                         remote_weights=mutated_remote,
                         recent_weights=mutated_recent,
                         identity=mutated_identity,
