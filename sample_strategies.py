@@ -186,7 +186,7 @@ sample_strategies = {
         "contrition": np.float16(1.0),
         "bigotry": np.float16(1.0)
     },
-    "Random": {
+    "random": {
         "cooperation_bias": np.float16(0.0),
         "linear_weights": np.zeros(8, dtype=np.float16),
         "remote_weights": np.array([[0, 0], [0, 0]], dtype=np.float16),
