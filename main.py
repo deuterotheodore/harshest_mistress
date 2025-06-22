@@ -201,8 +201,8 @@ class Agent:
 
         # xenophobia mechanic
         xenophobia = distance * self.ingroup_preference #small distance and small ingroup_preference reduces xenophobia
-        total_output *= np.clip(1 - 2 * (xenophobia - 0.5), 0, 1) # value reduced to 0 if xenophobia=1, doubled if 0, left alone if 0.5
-
+        total_output -= xenophobia 
+        
         #Values <-5 map to 0, values >+5 to 1. This is historically due to the sigmoid (logistic) function we used earlier, yielding values of 0.007 and .993 for -5, 5 respectively, which we treated as the "boundary to determinism". We could in principle divide everything by five for an equivalent algorithm, but there is also nothing wrong with keeping the [-5,5] convention.
         prob_cooperate = np.clip((0.5 + 0.1 * total_output), 0, 1)
         return 1 if random.random() < prob_cooperate else -1
@@ -259,7 +259,8 @@ def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weigh
         mutated_chivalry=0
         mutated_ladys_choice=(0,0,0,0)
 
-    return mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias
+    return mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias, mutated_male_investment, mutated_mating_display, mutated_chivalry, mutated_ladys_choice
+
 
 def agent_snapshot(agent, games_played, total_score):
     return {
@@ -518,8 +519,9 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
   
         # Generate offspring genome
         offspring_sex = random.randint(0, 1)
-        mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry,\
-        mutated_identity, mutated_ingroup_preference, mutated_male_bias = mutate_genome(
+        
+        #mutation call (sexual)
+        mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias, mutated_male_investment, mutated_mating_display, mutated_chivalry, mutated_ladys_choice = mutate_genome(
             father.cooperation_bias, father.linear_weights, father.remote_weights, father.recent_weights, father.contrition, father.bigotry, 
             father.identity, father.ingroup_preference, father.male_bias, father.male_investment, father.mating_display, father.chivalry, father.ladys_choice,
             parent2_genome={
@@ -558,7 +560,11 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
             identity=mutated_identity,
             ingroup_preference=mutated_ingroup_preference,
             sex=offspring_sex,
-            male_bias=offspring_male_bias
+            male_bias=offspring_male_bias,
+            male_investment=mutated_male_investment,
+            mating_display=mutated_mating_display,
+            chivalry=mutated_chivalry,
+            ladys_choice=mutated_ladys_choice
         )
         agents.append(new_agent)
         id_to_agent[next_id] = new_agent
@@ -716,10 +722,12 @@ SCATTERPLOT_ENABLED = True  # Toggle scatterplot
 GRID_OFFSET_X, GRID_OFFSET_Y = 40, 50
 GRAPH1_OFFSET_X, GRAPH1_OFFSET_Y = 880, 50  # Population/CC ratio/Female ratio
 GRAPH2_OFFSET_X, GRAPH2_OFFSET_Y = 1400, 50  # Reproduction/Sexual Selection
-GRAPH3_OFFSET_X, GRAPH3_OFFSET_Y = 880, 400  # Age/Energy/Score
-GRAPH4_OFFSET_X, GRAPH4_OFFSET_Y = 1400, 400  # Tribal (Identity/Xenophobia)
-DATA_OFFSET_X, DATA_OFFSET_Y = 900, 750
-BUTTON_OFFSET_X, BUTTON_OFFSET_Y = 900, 980
+GRAPH3_OFFSET_X, GRAPH3_OFFSET_Y = 880, 410  # Age/Energy/Score
+GRAPH4_OFFSET_X, GRAPH4_OFFSET_Y = 1400, 410  # Tribal (Identity/Xenophobia)
+GRAPH_WIDTH = 500
+GRAPH_HEIGHT = 300
+DATA_OFFSET_X, DATA_OFFSET_Y = 900, 770
+BUTTON_OFFSET_X, BUTTON_OFFSET_Y = 900, 1000
 WHITE = (250, 250, 250)
 BLACK = (5, 5, 5)
 GREEN = (20, 255, 30)
@@ -907,33 +915,19 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
 
     # Offspring count histogram (omit zero-offspring bin)
     offspring_counts = [len(agent.offspring) for agent in agents if len(agent.offspring) > 0]
-    max_bin = 1
-    offspring_points = []
     if offspring_counts:
-        max_offspring = max(offspring_counts)
-        offspring_bins, offspring_edges = np.histogram(offspring_counts, bins=HISTO_BINS, range=(1, max_offspring+1))
-        max_bin = max(offspring_bins) or 1
-        for i in range(len(offspring_bins)):
-            x = s_graph2_offset_x + (offspring_edges[i] / max_offspring) * int(500 * scale)
-            y = s_graph2_offset_y + int(300 * scale) - (offspring_bins[i] * int(300 * scale) // max_bin)
-            offspring_points.append((x, y))
-        for i in range(1, len(offspring_points)):
-            pygame.draw.line(screen, YELLOW, offspring_points[i-1], offspring_points[i], int(2 * scale))
-    
-    # Male investment histogram (if ALLOW_SEXUAL)
+        draw_histogram(s_graph2_offset_x, s_graph2_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, YELLOW, offspring_counts)
+        
+    # Male investment histogram
     if ALLOW_SEXUAL:
         male_investments = [agent.male_investment for agent in agents if hasattr(agent, 'male_investment')]
         if male_investments:
-            max_investment = max(male_investments)
-            investment_bins, investment_edges = np.histogram(male_investments, bins=HISTO_BINS, range=(0, max_investment+1))
-            max_bin = max(max_bin, max(investment_bins)) or 1
-            investment_points = []
-            for i in range(len(investment_bins)):
-                x = s_graph2_offset_x + (investment_edges[i] / max_investment) * int(500 * scale)
-                y = s_graph2_offset_y + int(300 * scale) - (investment_bins[i] * int(300 * scale) // max_bin)
-                investment_points.append((x, y))
-            for i in range(1, len(investment_points)):
-                pygame.draw.line(screen, RED, investment_points[i-1], investment_points[i], int(2 * scale))
+            draw_histogram(s_graph2_offset_x, s_graph2_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, RED, male_investments)
+
+        # ladys_choice[3] (kinship)
+        kin_values = [agent.ladys_choice[3] for agent in agents]
+        draw_histogram(s_graph2_offset_x, s_graph2_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, PINK,  kin_values)
+
     graph2_time = (time.perf_counter_ns() - graph2_start) / 1000
     
     # Draw age, energy, and score histograms (graph3)
@@ -945,45 +939,19 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     ages = [turn - agent.born for agent in agents]
     energy_scores = [agent.energy for agent in agents]
     total_scores = [total_score[agent.id] for agent in agents]
-    if ages and energy_scores and total_scores:
-        max_age = max(ages) if ages else 1
-        max_age += 1
-        min_energy = min(energy_scores) if energy_scores else 0
-        max_energy = max(energy_scores) if energy_scores else 1
-        energy_range = max_energy - min_energy if max_energy != min_energy else 1
-        min_score = min(total_scores) if total_scores else 0
-        max_score = max(total_scores) if total_scores else 1
-        score_range = max_score - min_score if max_score != min_score else 1
-        age_bins, age_edges = np.histogram(ages, bins=HISTO_BINS, range=(0, max_age))
-        energy_bins, energy_edges = np.histogram(energy_scores, bins=HISTO_BINS, range=(min_energy, max_energy))
-        score_bins, score_edges = np.histogram(total_scores, bins=HISTO_BINS, range=(min_score, max_score))
-        max_bin = max(max(age_bins), max(energy_bins), max(score_bins)) or 1
-        # Plot age histogram (blue)
-        age_points = []
-        for i in range(len(age_bins)):
-            x = s_graph3_offset_x + (age_edges[i] / max_age) * int(500 * scale)
-            y = s_graph3_offset_y + int(300 * scale) - (age_bins[i] * int(300 * scale) // max_bin)
-            age_points.append((x, y))
-        for i in range(1, len(age_points)):
-            pygame.draw.line(screen, BLUE, age_points[i-1], age_points[i], int(2 * scale))
-        # Plot energy histogram (red)
-        energy_points = []
-        for i in range(len(energy_bins)):
-            x = s_graph3_offset_x + ((energy_edges[i] - min_energy) / energy_range) * int(500 * scale)
-            y = s_graph3_offset_y + int(300 * scale) - (energy_bins[i] * int(300 * scale) // max_bin)
-            energy_points.append((x, y))
-        for i in range(1, len(energy_points)):
-            pygame.draw.line(screen, RED, energy_points[i-1], energy_points[i], int(2 * scale))
-        # Plot score histogram (green)
-        score_points = []
-        for i in range(len(score_bins)):
-            x = s_graph3_offset_x + ((score_edges[i] - min_score) / score_range) * int(500 * scale)
-            y = s_graph3_offset_y + int(300 * scale) - (score_bins[i] * int(300 * scale) // max_bin)
-            score_points.append((x, y))
-        for i in range(1, len(score_points)):
-            pygame.draw.line(screen, GREEN, score_points[i-1], score_points[i], int(2 * scale))
+    max_age=max(ages)
+    max_energy=max(energy_scores)
+    min_energy=min(energy_scores)
+    
+    if ages:
+        draw_histogram(s_graph3_offset_x, s_graph3_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, BLUE, ages)
+    if total_scores:
+        draw_histogram(s_graph3_offset_x, s_graph3_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, GREEN, total_scores)
+
+    if energy_scores:
+        draw_histogram(s_graph3_offset_x, s_graph3_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, RED, energy_scores)
         # Draw x-axis labels for energy
-        for i in range(6):
+        for i in range(5):
             energy_label = min_energy + i * (max_energy - min_energy) / 5
             label = font.render(f"{energy_label:.0f}", True, BLACK)
             label = pygame.transform.smoothscale_by(label, scale)
@@ -1001,6 +969,8 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     hist_label = pygame.transform.smoothscale_by(hist_label, scale)
     screen.blit(hist_label, (s_graph4_offset_x, s_graph4_offset_y - int(30 * scale)))
     xenophobia = [agent.ingroup_preference for agent in agents]
+
+    #identity scatterplot (experimental)
     if SCATTERPLOT_ENABLED:
         scatter_start = time.perf_counter_ns()
         # Orthonormalize TRIBE_MAP["A"] and TRIBE_MAP["B"]
@@ -1045,16 +1015,18 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     else:
         scatter_gather_time = 0
         scatter_draw_time = 0
+
     if xenophobia:
-        xe_bins, xe_edges = np.histogram(xenophobia, bins=HISTO_BINS, range=(0, 1))
-        max_bin = max(xe_bins) or 1
-        xe_points = []
-        for i in range(len(xe_bins)):
-            x = s_graph4_offset_x + xe_edges[i] * int(500 * scale)
-            y = s_graph4_offset_y + int(300 * scale) - (xe_bins[i] * int(300 * scale) // max_bin)
-            xe_points.append((x, y))
-        for i in range(1, len(xe_points)):
-            pygame.draw.line(screen, GREEN, xe_points[i-1], xe_points[i], int(2 * scale))
+        draw_histogram(s_graph4_offset_x, s_graph4_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, GREEN, xenophobia)
+        # Draw x-axis labels for xenophobia
+        min_xe=min(xenophobia)
+        max_xe=max(xenophobia)
+        for i in range(5):
+            xe_label = min_xe + i * (max_xe - min_xe) / 5
+            label = font.render(f"{xe_label:.2f}", True, BLACK)
+            label = pygame.transform.smoothscale_by(label, scale)
+            screen.blit(label, (s_graph4_offset_x + i * int(100 * scale) - int(10 * scale), s_graph4_offset_y + int(310 * scale)))
+
     graph4_time = (time.perf_counter_ns() - graph4_start) / 1000
     
     # Draw numeric data
@@ -1118,6 +1090,19 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     flip_time_ms = flip_time / 1000
 #    if (turn % PRINT_INTERVAL == 0 or turn < DEBUG_TURNS):
 #        print(f"Draw time: {total_time_ms:.1f} ms (Canvas: {canvas_time_ms:.1f}, Grid: {grid_time_ms:.1f}, Graph1: {graph1_time_ms:.1f}, Graph2: {graph2_time_ms:.1f}, Graph3: {graph3_time_ms:.1f}, Graph4: {graph4_time_ms:.1f}, Scatter Gather: {scatter_gather_time_ms:.1f}, Scatter Draw: {scatter_draw_time_ms:.1f}, Data: {data_time_ms:.1f}, Button: {button_time_ms:.1f}, Flip: {flip_time_ms:.1f})")
+
+def draw_histogram(x_origin, y_origin, hist_width, hist_height, num_bins, hist_color, hist_values):
+    max_val=max(hist_values)
+    hist_points = []
+    hist_bins, hist_edges = np.histogram(hist_values, bins=num_bins, range=(0, max_val))
+    max_bins=max(hist_bins)
+    for i in range(num_bins):
+        x = x_origin + int(i / num_bins * hist_width)
+        y = y_origin + hist_height - (hist_bins[i] * hist_height // max_bins)
+        hist_points.append((x, y))
+    for i in range(1, len(hist_points)):
+        pygame.draw.line(screen, hist_color, hist_points[i-1], hist_points[i], 2)
+
 
 def handle_button_click(pos, paused, simulation_ended):
     window_width, window_height = pygame.display.get_surface().get_size()
@@ -1366,7 +1351,9 @@ def main(control_queue, param_queue):
                 while agent.energy > ASEXUAL_REPRODUCTION_THRESHOLD + ASEXUAL_REPRODUCTION_COST:
                     possible_cells = [(agent.posx + dx, agent.posy + dy) for dx in [-1, 0, 1] for dy in [-1, 0, 1] if 0 <= agent.posx + dx < 10 and 0 <= agent.posy + dy < 10]
                     new_pos = random.choice(possible_cells)
-                    mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_identity, mutated_ingroup_preference, mutated_male_bias = mutate_genome(
+                                        
+                    #mutation call (asexual, still updates sexual parameters because both modes of reproduction may be enabled simultaneously)
+                    mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias, mutated_male_investment, mutated_mating_display, mutated_chivalry, mutated_ladys_choice = mutate_genome(
                         agent.cooperation_bias, agent.linear_weights, agent.remote_weights, agent.recent_weights, agent.identity, agent.ingroup_preference, agent.male_bias, agent.male_investment, agent.mating_display, agent.chivalry, agent.ladys_choice)
                     new_sex=random.randint(0,1)
                     new_male_bias = mutated_male_bias if new_sex == 0 else 0.0
@@ -1382,10 +1369,16 @@ def main(control_queue, param_queue):
                         linear_weights=0,
                         remote_weights=mutated_remote,
                         recent_weights=mutated_recent,
+                        contrition=mutated_contrition,
+                        bigotry=mutated_bigotry,
                         identity=mutated_identity,
                         ingroup_preference=mutated_ingroup_preference,
                         sex=new_sex,
-                        male_bias=new_male_bias
+                        male_bias=mutated_male_bias,
+                        male_investment=mutated_male_investment,
+                        mating_display=mutated_mating_display,
+                        chivalry=mutated_chivalry,
+                        ladys_choice=mutated_ladys_choice
                     )
                     next_id += 1
                     births += 1
