@@ -54,6 +54,7 @@ MIGRATION_COST = 5
 CONSUMPTION = 25
 AGING_PENALTY = 0.4 #set to 0 for immortality
 EXTRACTION_BASE = 100 # base value of energy harvested in each cell per turn, modified by bonus/penalty system below
+SOFT_ENERGY_CAP = 300 # tax on excessive energy reserves
 
 #prisoner's dilemma setup
 #reward/penalty system defined here is relevant for evolutionary pressure, the PAYOFFS matrix is only for keeping track of nominal scores without any direct environmental impact (but used for "fitness" in female choice in mating)
@@ -88,8 +89,7 @@ total_score = defaultdict(float)
 games_played =  defaultdict(int)
 
 class Agent:
-    def __init__(self, posx=None, posy=None, energy=30, id=None, parent=None, born=None, cooperation_bias=None, linear_weights=None, 
-                 remote_weights=None, recent_weights=None, contrition=1.0, bigotry=1.0, identity=None, ingroup_preference=None, sex=None, male_bias=None, male_investment=None, mating_display=None, chivalry=None, ladys_choice=None):
+    def __init__(self, posx=None, posy=None, energy=30, id=None, parent=None, born=None, cooperation_bias=None, remote_weights=None, recent_weights=None, contrition=1.0, bigotry=1.0, identity=None, ingroup_preference=None, sex=None, male_bias=None, male_investment=None, mating_display=None, chivalry=None, ladys_choice=None):
         self.posx = posx
         self.posy = posy
         self.energy = energy
@@ -104,13 +104,7 @@ class Agent:
             self.cooperation_bias = np.float16(np.random.uniform(-5, 5))
         else:
             self.cooperation_bias = np.float16(cooperation_bias)
- 
- #linear_weights discontinued
-        self.linear_weights=0
- #       if linear_weights is None:
- #           self.linear_weights = np.random.uniform(-2, 2, 8).astype(np.float16)
- #       else:
- #           self.linear_weights = np.array(linear_weights, dtype=np.float16)
+
         if remote_weights is None:
             self.remote_weights = np.zeros((2, 2), dtype=np.float16)
             self.remote_weights[0, 0] = np.random.uniform(-1, 1)
@@ -165,32 +159,35 @@ class Agent:
 #we need this to model the theoretical expression of known strategies such as AC, AD, TFT, TFTT, GT
 #all of these completely disregard own history, and AC, AD ignore history completely, and TFT only relies on opp_last1
 
-    def decide(self, input_vector, distance, opp_sex):
+    def decide(self, input_vector, distance, opp_sex, num_games):
         # input_vector: [opp_action_avg, own_action_avg, self_last1/2/3, opp_last1/2/3]
         # action_avg: [-1, 1], -1 = always defected, 1 = always cooperateed
         # self_last1/2/3, opp_last1/2/3: 1 (cooperated), -1 (defected), 0 (no history)
         #note: weights should naturally be in the range [-5,5] since we interpret total_result to represent probabilistic action in the [-5,5] range, deterministic outside of this. Weights can in principle "co-evolve" to larger values that may cancel out and still give probabilistic results, so pending extensive tests of evolutionary dynamics, let's not impose hard caps, but it will probably make sense to eventually constrain them to some range, such as [-10,10].
-
         if input_vector[2] == 0:	#empty history 
             total_output=self.cooperation_bias
         else:
             scaled_vector = input_vector.copy()
-            for i in range(2, 5):  # self_last1/2/3
+            #apply contrition/bigotry:
+            #contrition: weigh own defections more harshly
+            for i in [0,2,3,4]:  # self_last1/2/3
                 if scaled_vector[i] == -1:
                     scaled_vector[i] *= self.contrition
-            for i in range(5, 8):  # opp_last1/2/3
+            #bigotry: weigh opponent's defections more harshly
+            for i in [1,5,6,7]:  # opp_last1/2/3
                 if scaled_vector[i] == -1:
                     scaled_vector[i] *= self.bigotry
 
             remote_vector = scaled_vector[:2]  # [-1, 1]
             recent_vector = scaled_vector[2:]  # {-1, 1, 0}
             # Apply strategy
-#discontinuing linear_weights
-#            linear_term = np.dot(input_vector, self.linear_weights)
-            # we are now using an "anti-quadratic form", as in abs(v)^T W v
+            # we are using an "anti-quadratic form", as in abs(v)^T W v
             remote_term = np.dot(np.abs(remote_vector), np.dot(self.remote_weights, remote_vector))
             recent_term = np.dot(np.abs(recent_vector), np.dot(self.recent_weights, recent_vector))
-            total_output = remote_term + recent_term + self.cooperation_bias
+            #scale_bias: scale cooperation_bias if there is limited history
+            # explanation: we want cooperation_bias to determine fist-move decision, but not to overwhelm strategy if there already is interaction history.
+            scale_bias = 1.0 if num_games > 2 else 4.0 - num_games
+            total_output = remote_term + recent_term + self.cooperation_bias*scale_bias
 
         # sexual dimorphism mechanic
         if ALLOW_SEXUAL:
@@ -210,12 +207,11 @@ class Agent:
 def is_interacting(pos1x, pos1y, pos2x, pos2y):
     return max(abs(pos1x - pos2x), abs(pos1y - pos2y)) <= 1
 
-def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weights, contrition, bigotry, identity, ingroup_preference, male_bias, male_investment, mating_display, chivalry, ladys_choice, parent2_genome=None):
+def mutate_genome(cooperation_bias, remote_weights, recent_weights, contrition, bigotry, identity, ingroup_preference, male_bias, male_investment, mating_display, chivalry, ladys_choice, parent2_genome=None):
 
     # If parent2_genome provided (sexual reproduction), average genomes
     if parent2_genome:
         cooperation_bias = (cooperation_bias + parent2_genome['cooperation_bias']) / 2
-#        linear_weights = (linear_weights + parent2_genome['linear_weights']) / 2
         remote_weights = (remote_weights + parent2_genome['remote_weights']) / 2
         recent_weights = (recent_weights + parent2_genome['recent_weights']) / 2
         contrition = (contrition + parent2_genome['contrition']) / 2
@@ -228,8 +224,6 @@ def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weigh
         ladys_choice = (ladys_choice + parent2_genome['ladys_choice']) / 2
 
     mutated_cooperation_bias = (cooperation_bias + np.random.normal(0, MUTATION_RATE)).astype(np.float16)
-#    mutated_linear = linear_weights + np.random.normal(0, MUTATION_RATE, size=8).astype(np.float16)
-    mutated_linear = 0
     mutated_remote = remote_weights.copy()
     mutated_remote[0, 0] += np.random.normal(0, MUTATION_RATE)
     mutated_remote[1, 1] += np.random.normal(0, MUTATION_RATE)
@@ -241,17 +235,19 @@ def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weigh
         for j in range(i + 1, 6):
             delta = np.random.normal(0, MUTATION_RATE)
             mutated_recent[i, j] = mutated_recent[j, i] = mutated_recent[i, j] + delta
-    mutated_contrition = (contrition + np.random.normal(0, MUTATION_RATE)).astype(np.float16)
-    mutated_bigotry = (bigotry + np.random.normal(0, MUTATION_RATE)).astype(np.float16)
+    #contrition, bigotry are extremely sensitive, maybe clip to [0.5,2.0]
+    mutated_contrition = (contrition + np.random.normal(0, MUTATION_RATE*0.2)).astype(np.float16)
+    mutated_bigotry = (bigotry + np.random.normal(0, MUTATION_RATE*0.2)).astype(np.float16)
+
     mutated_identity = np.clip(identity + np.random.normal(0, MUTATION_RATE_IDENTITY, size=5), 0, 10).astype(np.float16)
-    
     mutated_ingroup_preference = np.clip(ingroup_preference + np.random.normal(0, MUTATION_RATE_IDENTITY), 0, 10).astype(np.float16)
-    if ALLOW_SEXUAL:
+
+    if ALLOW_SEXUAL: #review values for "units"/sensitivity
         mutated_male_bias = np.float16(male_bias + np.random.normal(0, MUTATION_RATE_SEXUAL))
-        mutated_male_investment = np.clip(male_investment + np.random.normal(0, MUTATION_RATE_SEXUAL), 0, MALE_INVESTMENT_CAP).astype(np.float16)
+        mutated_male_investment = np.clip(male_investment + np.random.normal(0, MUTATION_RATE_SEXUAL*0.2), 0, MALE_INVESTMENT_CAP).astype(np.float16)
         mutated_mating_display = np.clip(mating_display + np.random.normal(0, MUTATION_RATE_SEXUAL), 0, SEXUAL_REPRODUCTION_THRESHOLD).astype(np.float16)
         mutated_chivalry = np.float16(chivalry + np.random.normal(0, MUTATION_RATE_SEXUAL))
-        mutated_ladys_choice = ladys_choice + np.random.normal(0, MUTATION_RATE_SEXUAL, size=4).astype(np.float16)
+        mutated_ladys_choice = ladys_choice + np.random.normal(0, MUTATION_RATE_SEXUAL*0.2, size=4).astype(np.float16)
     else:
         mutated_male_bias = 0
         mutated_male_investment = 0
@@ -259,10 +255,12 @@ def mutate_genome(cooperation_bias, linear_weights, remote_weights, recent_weigh
         mutated_chivalry=0
         mutated_ladys_choice=(0,0,0,0)
 
-    return mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias, mutated_male_investment, mutated_mating_display, mutated_chivalry, mutated_ladys_choice
+    return mutated_cooperation_bias, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias, mutated_male_investment, mutated_mating_display, mutated_chivalry, mutated_ladys_choice
 
 
 def agent_snapshot(agent, games_played, total_score):
+#most of these values are immutable over agent lifetime. 
+# exceptions: died, (posx,posy), offspring, games_played, total_score.
     return {
         'id': agent.id,
         'born': agent.born,
@@ -275,7 +273,6 @@ def agent_snapshot(agent, games_played, total_score):
         'games_played': games_played[agent.id], #recover from external array
         'total_score': total_score[agent.id], #recover from external array
         'cooperation_bias': agent.cooperation_bias.tolist(),
-#        'linear_weights': agent.linear_weights.tolist(),
         'remote_weights': agent.remote_weights.tolist(),
         'recent_weights': agent.recent_weights.tolist(),
         'contrition': agent.contrition.tolist(),
@@ -306,8 +303,6 @@ def append_agent(posx, posy, id, born, identity, ingroup_preference, strategy, s
         id=id,
         born=born,
         cooperation_bias=strategy_params["cooperation_bias"],
-        linear_weights=0,
-#        linear_weights=strategy_params["linear_weights"].copy(),
         remote_weights=strategy_params["remote_weights"].copy(),
         recent_weights=strategy_params["recent_weights"].copy(),
         contrition=strategy_params["contrition"],
@@ -339,8 +334,8 @@ def process_chunk(pairs, result_queue, history_dict):
     for A, B in pairs:
         key = (min(A.id, B.id), max(A.id, B.id))
         
-        # Get history data: (deque, A_action_avg, B_action_avg, A_action_sum, B_action_sum, total_interactions)
-        history, A_action_avg, B_action_avg, total_interactions = history_dict.get(
+        # Get history data: (deque, A_action_avg, B_action_avg, A_action_sum, B_action_sum, our_interactions)
+        history, A_action_avg, B_action_avg, our_interactions = history_dict.get(
             key, (deque(maxlen=3), 0.0, 0.0, 0)
         )
         history = history.copy()
@@ -360,16 +355,16 @@ def process_chunk(pairs, result_queue, history_dict):
             B_last3 = history[-3][1] if len(history) >= 3 else 0
             
             input_vector_A = np.array(
-                [B_action_avg, A_action_avg, A_last1, A_last2, A_last3, B_last1, B_last2, B_last3],
+                [A_action_avg, B_action_avg, A_last1, A_last2, A_last3, B_last1, B_last2, B_last3],
                 dtype=np.float16
             )
             input_vector_B = np.array(
-                [A_action_avg, B_action_avg, B_last1, B_last2, B_last3, A_last1, A_last2, A_last3],
+                [B_action_avg, A_action_avg, B_last1, B_last2, B_last3, A_last1, A_last2, A_last3],
                 dtype=np.float16
             )
 
-            action_A = A.decide(input_vector_A, distance, B.sex)  # Returns 1 or -1
-            action_B = B.decide(input_vector_B, distance, A.sex)  # Returns 1 or -1 
+            action_A = A.decide(input_vector_A, distance, B.sex, our_interactions)  # Returns 1 or -1
+            action_B = B.decide(input_vector_B, distance, A.sex, our_interactions)  # Returns 1 or -1 
  
             score_A += PAYOFFS[(action_A, action_B)]
             score_B += PAYOFFS[(action_B, action_A)]
@@ -396,14 +391,14 @@ def process_chunk(pairs, result_queue, history_dict):
                 local_dd_games[(B.posx, B.posy)] += 1
 
             # Update past actions averages for remote history
-            total_interactions += 1
-            A_action_avg = np.float16((A_action_avg * (total_interactions - 1) + action_A) / total_interactions)
-            B_action_avg = np.float16((B_action_avg * (total_interactions - 1) + action_B) / total_interactions)
+            our_interactions += 1
+            A_action_avg = np.float16((A_action_avg * (our_interactions - 1) + action_A) / our_interactions)
+            B_action_avg = np.float16((B_action_avg * (our_interactions - 1) + action_B) / our_interactions)
  
         local_total_score[A.id] += score_A
         local_total_score[B.id] += score_B        
         local_payouts.append((A.id, B.id, score_A, score_B, modifier/INTERACTION_DEPTH))
-        local_history_updates[key] = (history, A_action_avg, B_action_avg, total_interactions)
+        local_history_updates[key] = (history, A_action_avg, B_action_avg, our_interactions)
   
         # Sexual reproduction: collect possible mating pairs
 
@@ -423,7 +418,7 @@ def process_chunk(pairs, result_queue, history_dict):
         local_mating_pairs
     ))
 
-def run_interactions(interacting_pairs, history_dict, interaction_payouts, interactions, total_score, games_played, cc_games, dd_games, next_id):
+def run_interactions(interacting_pairs, history_dict, interaction_payouts, interactions, total_score, games_played, cc_games, dd_games, next_id, births):
     """Parallelization for pairwise interaction, interacting_pairs is split into 'chunks', code for processing interactions is in process_chunks.
     process_chunk also marks pairs for possible sexual reproduction, but actual mating behavior in candidate pairs is implemented here.  """
     num_processes = min(NUM_CORES, len(interacting_pairs))  # Avoid empty chunks in case of extremely low population 
@@ -449,8 +444,8 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
 
         interaction_payouts.extend(local_payouts)
         mating_pairs.extend(local_mating_pairs)
-        for key, (history, A_action_avg, B_action_avg, total_interactions) in local_history_updates.items():
-            history_dict[key] = (history, A_action_avg, B_action_avg, total_interactions)            
+        for key, (history, A_action_avg, B_action_avg, our_interactions) in local_history_updates.items():
+            history_dict[key] = (history, A_action_avg, B_action_avg, our_interactions)            
         for pos, count in local_interactions.items():
             interactions[pos] += count
         for pos, count in local_cc_games.items():
@@ -496,7 +491,7 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
             hist_data = history_dict.get(key, (deque(maxlen=3), 0, 0, 0))
             opp_avg = hist_data[1 if male_id < mother_id else 2]
             opp_last = [act[0 if male_id < mother_id else 1] for act in hist_data[0]] + [0] * (3 - len(hist_data[0]))
-            caring = (opp_avg + sum(opp_last)) / 5  # Normalize (~-5 to 5)
+            caring = male.male_investment*5+(opp_avg + sum(opp_last)) / 5  # Normalize (~-5 to 5)
             # Kinship: Quadratic identity distance
             kinship = 1/(np.sum((male.identity - mother.identity) ** 2) / IDENTITY_DIMENSIONS +1)   
             # Score: Scalar product with ladys_choice
@@ -511,6 +506,10 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
         probs = np.exp(scaled_scores - scaled_scores.max()) / np.sum(np.exp(scaled_scores - scaled_scores.max()))
         father_id = np.random.choice(male_ids, p=probs)
         father = id_to_agent[father_id]
+
+        if (turn % PRINT_INTERVAL == 0 or turn < DEBUG_TURNS):
+            father_score = next(score[1] for score in scores if score[0] == father_id)
+            print (f"father: {father_id}, mother: {mother.id}: score: {father_score:.2f}, choice: {mother.ladys_choice}, kinship {1/(np.sum((male.identity - mother.identity) ** 2) / IDENTITY_DIMENSIONS +1):.2f}")    
     
         # Deduct energy
         mother.energy -= (OFFSPRING_ENERGY + SEXUAL_REPRODUCTION_COST) * (1 - father.male_investment)
@@ -521,13 +520,11 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
         offspring_sex = random.randint(0, 1)
         
         #mutation call (sexual)
-        mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias, mutated_male_investment, mutated_mating_display, mutated_chivalry, mutated_ladys_choice = mutate_genome(
-            father.cooperation_bias, father.linear_weights, father.remote_weights, father.recent_weights, father.contrition, father.bigotry, 
+        mutated_cooperation_bias, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias, mutated_male_investment, mutated_mating_display, mutated_chivalry, mutated_ladys_choice = mutate_genome(
+            father.cooperation_bias, father.remote_weights, father.recent_weights, father.contrition, father.bigotry, 
             father.identity, father.ingroup_preference, father.male_bias, father.male_investment, father.mating_display, father.chivalry, father.ladys_choice,
             parent2_genome={
                 'cooperation_bias': mother.cooperation_bias,
-#                'linear_weights': mother.linear_weights,
-                'linear_weights': 0,
                 'remote_weights': mother.remote_weights,
                 'recent_weights': mother.recent_weights,
                 'contrition': mother.contrition,
@@ -551,8 +548,6 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
             posx=mother.posx, posy=mother.posy, energy=OFFSPRING_ENERGY,
             id=next_id, parent=(father_id, mother_id), born=turn,
             cooperation_bias=mutated_cooperation_bias,
-#            linear_weights=mutated_linear,
-            linear_weights=0,
             remote_weights=mutated_remote,
             recent_weights=mutated_recent,
             contrition=mutated_contrition,
@@ -573,14 +568,16 @@ def run_interactions(interacting_pairs, history_dict, interaction_payouts, inter
             if parent_id in id_to_agent:
                 id_to_agent[parent_id].offspring.append(next_id)
         next_id += 1
-    
-    return next_id        
+        births += 1
+    return next_id, births
         
 def pretty_print_agent(agent):
     """Prepares string for pretty-printing an entry from dead_agents to either console or logfile."""
     lines = []
     sex_label = 'm' if agent['sex'] == 0 else 'f'
-    lines.append(f"ID {agent['id']}: born {agent['born']}, died {agent['died']} at ({agent['posx']}, {agent['posy']}), aged {agent['died']-agent['born']}, sex: {sex_label}")
+    agent_died = f" died {agent['died']}" if agent['died'] > 0 else " (living)"
+    agent_age = max(agent['died']-agent['born'], NUM_TURNS - agent['born'])
+    lines.append(f"ID {agent['id']}: born {agent['born']}, {agent_died} at ({agent['posx']}, {agent['posy']}), aged {agent_age}, sex: {sex_label}")
     #genealogy+biography
     lines.append(f"  parent: {agent['parent']}, offspring: {len(agent['offspring'])} {agent['offspring']}, games played: {agent['games_played']}, avg score: {(agent['total_score']/agent['games_played']):.2f}")
     #tribal parameters
@@ -593,7 +590,6 @@ def pretty_print_agent(agent):
 
     #Prisoner's dilemma strategy parameters. Print matrices: 2x2 lower triangular, then 6x6 lower triangular indented by 2 columns
     lines.append(f"  bias: {agent['cooperation_bias']:.2f}, contrition: {agent['contrition']:.2f}, bigotry: {agent['bigotry']:.2f}")    
-    lines.append("  strategy matrix:")
     remote = agent['remote_weights']
     for i in range(2):
         row = [f"{remote[i][j]:>7.2f}" for j in range(i + 1)]
@@ -610,13 +606,16 @@ def write_agent_to_log(agent, file_path):
     with open(file_path, 'a') as f:
         f.write(pretty_print_agent(agent) + "\n")    
 
-def log_dead_agents(dead_agents, file_path, last_logged_turn, clear_list=True):
+def log_dead_agents(dead_agents, file_path, last_logged_turn, clear_list=False):
 
     if not dead_agents:
         return last_logged_turn
-    
-    # Write only agents with died > last_logged_turn
-    new_agents = [agent for agent in dead_agents if agent['died'] > last_logged_turn]
+
+    if turn > 0: # Write only agents with died > last_logged_turn
+        new_agents = [agent for agent in dead_agents if (agent['died'] > last_logged_turn)]
+    if turn == -1: # special case, now writing living agents at the end of NUM_TURNS
+        new_agents = [agent for agent in dead_agents if (agent['died'] == -1)]
+
     for agent in new_agents:
         write_agent_to_log(agent, file_path)
     
@@ -625,6 +624,7 @@ def log_dead_agents(dead_agents, file_path, last_logged_turn, clear_list=True):
         last_logged_turn = max(agent['died'] for agent in new_agents)
     
     # Clear list if requested
+    # don't do this, since it will mess up final statistics calculations
     if clear_list:
         dead_agents.clear()
     
@@ -726,7 +726,7 @@ GRAPH3_OFFSET_X, GRAPH3_OFFSET_Y = 880, 410  # Age/Energy/Score
 GRAPH4_OFFSET_X, GRAPH4_OFFSET_Y = 1400, 410  # Tribal (Identity/Xenophobia)
 GRAPH_WIDTH = 500
 GRAPH_HEIGHT = 300
-DATA_OFFSET_X, DATA_OFFSET_Y = 900, 770
+DATA_OFFSET_X, DATA_OFFSET_Y = 900, 780
 BUTTON_OFFSET_X, BUTTON_OFFSET_Y = 900, 1000
 WHITE = (250, 250, 250)
 BLACK = (5, 5, 5)
@@ -916,13 +916,13 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     # Offspring count histogram (omit zero-offspring bin)
     offspring_counts = [len(agent.offspring) for agent in agents if len(agent.offspring) > 0]
     if offspring_counts:
-        draw_histogram(s_graph2_offset_x, s_graph2_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, YELLOW, offspring_counts)
+        draw_histogram(s_graph2_offset_x, s_graph2_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), 6, YELLOW, offspring_counts)
         
     # Male investment histogram
     if ALLOW_SEXUAL:
         male_investments = [agent.male_investment for agent in agents if hasattr(agent, 'male_investment')]
         if male_investments:
-            draw_histogram(s_graph2_offset_x, s_graph2_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, RED, male_investments)
+            draw_histogram(s_graph2_offset_x, s_graph2_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, BLUE, male_investments)
 
         # ladys_choice[3] (kinship)
         kin_values = [agent.ladys_choice[3] for agent in agents]
@@ -939,9 +939,9 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     ages = [turn - agent.born for agent in agents]
     energy_scores = [agent.energy for agent in agents]
     total_scores = [total_score[agent.id] for agent in agents]
-    max_age=max(ages)
-    max_energy=max(energy_scores)
-    min_energy=min(energy_scores)
+    max_age=max(ages) if ages else 0
+    max_energy=max(energy_scores) if energy_scores else 0
+    min_energy=min(energy_scores) if energy_scores else 0
     
     if ages:
         draw_histogram(s_graph3_offset_x, s_graph3_offset_y, int(GRAPH_WIDTH * scale), int(GRAPH_HEIGHT * scale), HISTO_BINS, BLUE, ages)
@@ -1032,7 +1032,8 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     # Draw numeric data
     data_start = time.perf_counter_ns()
     total_interactions = sum(interactions.values())
-    ns_per_int = elapsed/total_interactions*1e+9 if total_interactions > 0 else 0
+    #interactions double-counts each interaction, same for cc_games, dd_games, but divide total_interactions //2 for ns_per_int.
+    ns_per_int = elapsed/total_interactions*2e+9 if total_interactions > 0 else 0
     total_cc = sum(cc_games.values())
     total_dd = sum(dd_games.values())
     total_cd = total_interactions - total_cc - total_dd
@@ -1040,13 +1041,10 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
     dd_percent = (total_dd / total_interactions * 100) if total_interactions > 0 else 0
     cd_percent = (total_cd / total_interactions * 100) if total_interactions > 0 else 0
     data_texts = [
-        f"Turn: {turn}",
-        f"Population: {len(agents)}; ancestor log: {len(dead_agents)}",
-        f"Interactions: {total_interactions}",
-        f"(C,C): {cc_percent:.1f}%",
-        f"(D,D): {dd_percent:.1f}%",
-        f"(C,D): {cd_percent:.1f}%",
-        f"elapsed: {(elapsed*1000):.0f} ms (per interaction: {ns_per_int/1000:.1f} μs)"
+        f"Turn: {turn} ({(elapsed*1000):.0f} ms)",
+        f"Population: {len(agents)} (current),  {len(dead_agents)} (dead)",
+        f"Interactions: {total_interactions // 2} ({ns_per_int/1000:.1f} μs)",
+        f"(C,C): {cc_percent:.1f}%; (D,D): {dd_percent:.1f}%; (C,D): {cd_percent:.1f}%",
     ]
     for i, text in enumerate(data_texts):
         rendered = font.render(text, True, BLACK)
@@ -1092,17 +1090,17 @@ def draw_visualization(screen, agents, cc_games, dd_games, interactions, populat
 #        print(f"Draw time: {total_time_ms:.1f} ms (Canvas: {canvas_time_ms:.1f}, Grid: {grid_time_ms:.1f}, Graph1: {graph1_time_ms:.1f}, Graph2: {graph2_time_ms:.1f}, Graph3: {graph3_time_ms:.1f}, Graph4: {graph4_time_ms:.1f}, Scatter Gather: {scatter_gather_time_ms:.1f}, Scatter Draw: {scatter_draw_time_ms:.1f}, Data: {data_time_ms:.1f}, Button: {button_time_ms:.1f}, Flip: {flip_time_ms:.1f})")
 
 def draw_histogram(x_origin, y_origin, hist_width, hist_height, num_bins, hist_color, hist_values):
-    max_val=max(hist_values)
-    hist_points = []
-    hist_bins, hist_edges = np.histogram(hist_values, bins=num_bins, range=(0, max_val))
-    max_bins=max(hist_bins)
-    for i in range(num_bins):
-        x = x_origin + int(i / num_bins * hist_width)
-        y = y_origin + hist_height - (hist_bins[i] * hist_height // max_bins)
-        hist_points.append((x, y))
-    for i in range(1, len(hist_points)):
-        pygame.draw.line(screen, hist_color, hist_points[i-1], hist_points[i], 2)
-
+    max_val=max(hist_values) if hist_values else 0
+    if max_val > 0:
+        hist_points = []
+        hist_bins, hist_edges = np.histogram(hist_values, bins=num_bins, range=(0, max_val))
+        max_bins=max(hist_bins)
+        for i in range(num_bins):
+            x = x_origin + int(i / num_bins * hist_width)
+            y = y_origin + hist_height - (hist_bins[i] * hist_height // max_bins)
+            hist_points.append((x, y))
+        for i in range(1, len(hist_points)):
+            pygame.draw.line(screen, hist_color, hist_points[i-1], hist_points[i], 2)
 
 def handle_button_click(pos, paused, simulation_ended):
     window_width, window_height = pygame.display.get_surface().get_size()
@@ -1156,7 +1154,7 @@ def main(control_queue, param_queue):
             append_agent(
                 posx=posx, posy=posy, id=next_id, born=0, sex=0,
                 identity=TRIBE_MAP[tribe], ingroup_preference=params[f"ingroup_pref{founder_num}"],
-                strategy=strategy, sexual_selection="fascist",
+                strategy=strategy, sexual_selection="balanced",
                 agents=agents
             )
             next_id += 1
@@ -1164,7 +1162,7 @@ def main(control_queue, param_queue):
             append_agent(
                 posx=posx, posy=posy, id=next_id, born=0, sex=1,
                 identity=TRIBE_MAP[tribe], ingroup_preference=params[f"ingroup_pref{founder_num}"],
-                strategy=strategy, sexual_selection="fascist",
+                strategy=strategy, sexual_selection="balanced",
                 agents=agents
             )
             next_id += 1
@@ -1176,7 +1174,7 @@ def main(control_queue, param_queue):
             append_agent(
                 posx=posx, posy=posy, id=next_id, born=0,
                 identity=TRIBE_MAP[tribe], ingroup_preference=params[f"ingroup_pref{founder_num}"],
-                strategy=strategy, sexual_selection="fascist",
+                strategy=strategy, sexual_selection="balanced",
                 agents=agents
             )
             next_id += 1
@@ -1197,7 +1195,6 @@ def main(control_queue, param_queue):
     pygame_clock = pygame.time.Clock()
 
     while turn < NUM_TURNS:
-    
         try:
             new_params = param_queue.get_nowait()
 #            print(f"Updated params: {new_params}")
@@ -1223,7 +1220,7 @@ def main(control_queue, param_queue):
         cc_games = defaultdict(int)
         dd_games = defaultdict(int)
         interactions = defaultdict(int)
-
+        births = 0
     #INTERACTION_DEPTH: interactions per pair per turn, in principle could be set to "full game" value (50, 100 or 200) at the cost of extremely long runtimes
 
     #main game loop overview:
@@ -1238,6 +1235,8 @@ def main(control_queue, param_queue):
         for agent in agents:
             agent.energy -= CONSUMPTION
             agent.energy -= AGING_PENALTY*(turn-agent.born)
+            if agent.energy > SOFT_ENERGY_CAP:
+                agent.energy -= (agent.energy - SOFT_ENERGY_CAP)*.1
             if turn < DEBUG_TURNS:
                 print(f"Turn {turn}, Agent {agent.id} at ({agent.posx},{agent.posy}): Energy after consumption = {agent.energy:.2f}")
 
@@ -1246,9 +1245,12 @@ def main(control_queue, param_queue):
         for agent in dead_this_turn:
             dead_agents.append(agent_snapshot(agent, games_played, total_score))
 	    #some housekeeping (delete no longer needed array entries)
-            del games_played[agent.id]
-            del total_score[agent.id]
-            del interactions_per_agent[agent.id]
+            if games_played[agent.id]:
+                del games_played[agent.id]
+            if total_score[agent.id]:
+                del total_score[agent.id]
+            if interactions_per_agent[agent.id]:
+                del interactions_per_agent[agent.id]
             keys_to_remove = [key for key in history_dict if agent.id in key]
             for key in keys_to_remove:
                 del history_dict[key]
@@ -1296,7 +1298,7 @@ def main(control_queue, param_queue):
 
         #parallelized interaction loop:
         if len(interacting_pairs) > 0:
-            next_id = run_interactions(interacting_pairs, history_dict, interaction_payouts, interactions, total_score, games_played, cc_games, dd_games, next_id)
+            next_id, births = run_interactions(interacting_pairs, history_dict, interaction_payouts, interactions, total_score, games_played, cc_games, dd_games, next_id, births)
 
     # Step 3: Energy Distribution
         energy_change = defaultdict(float)
@@ -1337,14 +1339,12 @@ def main(control_queue, param_queue):
             id_to_agent[aid].energy += change
             if turn < DEBUG_TURNS:
                 print(f"Turn {turn}, Agent {aid}: final energy = {id_to_agent[aid].energy:.2f}")
-#                print(f"Turn {turn}, Agent {aid}: Linear weights = {id_to_agent[aid].linear_weights.tolist()}")
                 print(f"Turn {turn}, Agent {aid}: remote weights = {id_to_agent[aid].remote_weights.tolist()}")
                 print(f"Turn {turn}, Agent {aid}: recent weights = {id_to_agent[aid].recent_weights.tolist()}")
                 print(f"Turn {turn}, Agent {aid}: identity = {id_to_agent[aid].identity.tolist()}")
                 print(f"Turn {turn}, Agent {aid}: ingroup preference = {id_to_agent[aid].ingroup_preference:.2f}")
 
     # Step 4: Asexual reproduction
-        births = 0
         if ALLOW_ASEXUAL:
             new_agents = []
             for agent in agents[:]:
@@ -1353,8 +1353,9 @@ def main(control_queue, param_queue):
                     new_pos = random.choice(possible_cells)
                                         
                     #mutation call (asexual, still updates sexual parameters because both modes of reproduction may be enabled simultaneously)
-                    mutated_cooperation_bias, mutated_linear, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias, mutated_male_investment, mutated_mating_display, mutated_chivalry, mutated_ladys_choice = mutate_genome(
-                        agent.cooperation_bias, agent.linear_weights, agent.remote_weights, agent.recent_weights, agent.identity, agent.ingroup_preference, agent.male_bias, agent.male_investment, agent.mating_display, agent.chivalry, agent.ladys_choice)
+                    mutated_cooperation_bias, mutated_remote, mutated_recent, mutated_contrition, mutated_bigotry, mutated_identity, mutated_ingroup_preference, mutated_male_bias, mutated_male_investment, mutated_mating_display, mutated_chivalry, mutated_ladys_choice = mutate_genome(
+                        agent.cooperation_bias, agent.remote_weights, agent.recent_weights, agent.contrition, agent.bigotry, agent.identity, agent.ingroup_preference, agent.male_bias, agent.male_investment, agent.mating_display, agent.chivalry, agent.ladys_choice)
+
                     new_sex=random.randint(0,1)
                     new_male_bias = mutated_male_bias if new_sex == 0 else 0.0
                     new_agent = Agent(
@@ -1365,8 +1366,6 @@ def main(control_queue, param_queue):
                         parent=agent.id,
                         born=turn,
                         cooperation_bias=mutated_cooperation_bias,
-#                        linear_weights=mutated_linear,
-                        linear_weights=0,
                         remote_weights=mutated_remote,
                         recent_weights=mutated_recent,
                         contrition=mutated_contrition,
@@ -1408,7 +1407,7 @@ def main(control_queue, param_queue):
                     new_pos = random.choice(lower_pop_cells)
                     migrations.append((A, new_pos[0], new_pos[1]))
 
-        #apply all migrations at simultaneously    
+        #apply all migrations simultaneously    
         for agent, new_posx, new_posy in migrations:
             agent.posx, agent.posy = new_posx, new_posy
             agent.energy -= MIGRATION_COST
@@ -1446,14 +1445,13 @@ def main(control_queue, param_queue):
             draw_visualization(screen, agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, female_ratio_history, total_score, population, font, turn,  (time.time()-timestamp), paused, text_cache)
 
     # Print progress
-    # somewhat outdated, to be reviewed ("births" no longer accurate in case of sexual reproduction)
         if (turn % PRINT_INTERVAL == 0 or turn < DEBUG_TURNS) and total_interactions > 0:
             print(f"Turn {turn}: Population = {len(agents)}, Births = {births}, Deaths = {deaths}, Sex ratio {female_pop/len(agents):.2f}, "
                   f"Interactions = {total_interactions}, (C,C) = {(total_cc/total_interactions):.2f}, (D,D) = {(total_dd/total_interactions):.2f}, (C,D) = {(total_cd/total_interactions):.2f}, "
                   f"Avg Score = {avg_score:.2f}, Score Std = {score_std:.2f}")
             if turn < DEBUG_TURNS:
                 print(f"Outcome check: (C,C) + (D,D) + (C,D) = {total_cc + total_dd + total_cd}, Interactions = {total_interactions}")
-                print("Agent positions:", [(agent.id, agent.posx, agent.posy, agent.energy) for agent in agents])
+                print("Agent positions:", [(agent.id, agent.posx, agent.posy, int(agent.energy+.5)) for agent in agents])
 
         turn += 1
 
@@ -1469,6 +1467,12 @@ def main(control_queue, param_queue):
 # Final statistics
     print("Final population:", len(agents))
     print("Number of dead agents:", len(dead_agents))
+
+#now add living agents to dead_agents log for overall statistics and logging
+    turn = -1
+    for agent in agents:
+        dead_agents.append(agent_snapshot(agent, games_played, total_score))
+
     if dead_agents:
         most_offspring = max(dead_agents, key=lambda x: len(x['offspring']))
         print(f"Agent with most offspring: ID {most_offspring['id']} with {len(most_offspring['offspring'])} offspring")
@@ -1482,14 +1486,14 @@ def main(control_queue, param_queue):
 
 #this is a placeholder for a more sophisticated analysis of what has happened. The idea would be to analyze which strategies were successful, when they arose, and possibly if there were epochs or eras during the run during which certain strategies dominated and when and how these eras ended, perhaps cycles of chaos and order, etc.
 
-        print("Listing some interesting dead agents:")
+        print("Listing some interesting agents:")
         for dead_agent in dead_agents:
-            if (len(dead_agent['offspring']) > (len(most_offspring['offspring']) * 0.9) or (dead_agent['games_played'] > 0 and (dead_agent['total_score'] / dead_agent['games_played']) > (best_avg_score['total_score'] / best_avg_score['games_played'] * 0.9)) or (dead_agent['died'] - dead_agent['born']) > (NUM_TURNS / 2)):
+            if (len(dead_agent['offspring']) > (len(most_offspring['offspring']) * 0.9)) or (dead_agent['games_played'] > 0 and (dead_agent['total_score'] > (highest_score['total_score'] * 0.9))):
                 print (pretty_print_agent(dead_agent))
 
     if LOG_TO_FILE:
         last_logged_turn = log_dead_agents(dead_agents, logfile_path, last_logged_turn)
-        log_simulation_stats(turn, agents, dead_agents, games_played, total_score, logfile_path)
+        log_simulation_stats(NUM_TURNS, agents, dead_agents, games_played, total_score, logfile_path)
 
     # Post-simulation loop
     while True:
@@ -1501,7 +1505,7 @@ def main(control_queue, param_queue):
                 if should_exit:
                     return
         
-        draw_visualization(screen, agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, female_ratio_history, total_score, population, font, turn,  0, paused, text_cache, True)
+        draw_visualization(screen, agents, cc_games, dd_games, interactions, population_history, cc_percentage_history, female_ratio_history, total_score, population, font, NUM_TURNS,  0, paused, text_cache, True)
         time.sleep(1.0 / FPS)
 
 #######################################################################
@@ -1531,9 +1535,9 @@ def create_start_screen():
         "migration_rate": tk.DoubleVar(value=0.05),
         "migration_cost": tk.IntVar(value=5),
         "aging_penalty": tk.DoubleVar(value=0.4),
-        "mutation_rate": tk.DoubleVar(value=0.1),
-        "mutation_rate_tribal": tk.DoubleVar(value=0.05),
-        "mutation_rate_sexual": tk.DoubleVar(value=0.05),
+        "mutation_rate": tk.DoubleVar(value=0.2),
+        "mutation_rate_tribal": tk.DoubleVar(value=0.1),
+        "mutation_rate_sexual": tk.DoubleVar(value=0.1),
         "log_to_file": tk.BooleanVar(value=False),
         "logfile": tk.StringVar(value=logfile_path),
         "log_turns": tk.StringVar(value="100"),
@@ -1686,7 +1690,7 @@ def create_start_screen():
         col = i - 1
         tk.Label(column_row, text=founder_labels[col], font=small_font, bg=founders_col).grid(row=0, column=col, sticky="w", padx=5)
         tk.Checkbutton(column_row, bg=founders_col, variable=params[f"founder{i}"]).grid(row=1, column=col, sticky="w", padx=5)
-        tk.OptionMenu(column_row, params[f"strategy{i}"], "TFT", "TFTT", "AC", "AD", "GT", "random").grid(row=2, column=col, sticky="w", padx=5)
+        tk.OptionMenu(column_row, params[f"strategy{i}"], "TFT", "TFTT", "AC", "AD", "GT", "Pavlov", "fair", "random").grid(row=2, column=col, sticky="w", padx=5)
         tk.OptionMenu(column_row, params[f"tribe{i}"], "A", "B", "C", "D", "E").grid(row=3, column=col, sticky="w", padx=5)
         ttk.Scale(column_row, from_=0.0, to=1.0, orient=tk.VERTICAL, variable=params[f"ingroup_pref{i}"], length=int(50 * min((window_width/422) ** SCALE_EXP, 1.5))).grid(row=4, column=col, padx=5)
         tk.Label(column_row, textvariable=ingroup_display[i], font=small_font, width=4, bg=founders_col).grid(row=5, column=col, padx=5)
@@ -1719,13 +1723,13 @@ def create_start_screen():
     slider_row = tk.Frame(reproduction_frame, bg=reproduction_col)
     slider_row.pack(fill="x", pady=2)
     tk.Label(slider_row, text="individual", font=small_font, bg=reproduction_col).grid(row=0, column=0, padx=5)
-    mutation_slider = tk.Scale(slider_row, bg=reproduction_col, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
+    mutation_slider = tk.Scale(slider_row, bg=reproduction_col, from_=0.0, to=1.0, resolution=0.02, orient=tk.VERTICAL, variable=params["mutation_rate"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     mutation_slider.grid(row=1, column=0, padx=5)
     tk.Label(slider_row, text="tribal", font=small_font, bg=reproduction_col).grid(row=0, column=1, padx=5)
-    tribal_slider = tk.Scale(slider_row, bg=reproduction_col, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate_tribal"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
+    tribal_slider = tk.Scale(slider_row, bg=reproduction_col, from_=0.0, to=1.0, resolution=0.02, orient=tk.VERTICAL, variable=params["mutation_rate_tribal"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     tribal_slider.grid(row=1, column=1, padx=5)
     tk.Label(slider_row, text="sexual", font=small_font, bg=reproduction_col).grid(row=0, column=2, padx=5)
-    sexual_slider = tk.Scale(slider_row, bg=reproduction_col, from_=0.0, to=0.5, resolution=0.01, orient=tk.VERTICAL, variable=params["mutation_rate_sexual"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
+    sexual_slider = tk.Scale(slider_row, bg=reproduction_col, from_=0.0, to=1.0, resolution=0.02, orient=tk.VERTICAL, variable=params["mutation_rate_sexual"], length=int(100 * min((window_width/422) ** SCALE_EXP, 1.5)))
     sexual_slider.grid(row=1, column=2, padx=5)
 
     logging_frame = tk.Frame(main_frame)
